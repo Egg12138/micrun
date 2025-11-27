@@ -18,6 +18,7 @@ $(TARGET): $(SRC)
 
 clean:
 	rm -f $(TARGET)
+	rm mock_ctl
 
 clean-all: clean gc ## Clean build artifacts and leftover resources
 

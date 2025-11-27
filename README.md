@@ -1,3 +1,10 @@
+# todos in days
+
+* yocto all-in-one building
+* fix io bugs
+* better netns handling
+* fix metrics bugs
+
 # micrun container runimte
 
 
