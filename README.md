@@ -1,14 +1,31 @@
-# todos in days
+# todos
+## todos in days
 
 * yocto all-in-one building
 * fix io bugs
 * better netns handling
 * fix metrics bugs
 
+## todos in weeks
+
+to consider:
+
+* is it worthy to implementa micrun a **common runtime** which is capable of dealing with Linux OCI images?
+> 1. ~~implement it manually~~
+> 2. send request to other runtimes: lcr, runc, crun, gvisor, youki, etc.. , filter by annotations
+     if annotations contain neither `defs.MicranAnnotationPrefix` nor `Infra container annotation`, transfer tasks to external runtime
+     "crun or lcr" would be good for embedded system
+> 3. 
+
 # micrun container runimte
 
 
 ## register runtime
+
+* by `--runtime io.containerd.<runtime name>` options,  user can specify the runtime to run a container if runtime is installed on `$PATH`. 
+* we can use containerd shim runtime [without installing on PATH](https://docs.docker.com/engine/daemon/alternative-runtimes/#use-a-containerd-shim-without-installing-on-path)
+
+### registr  
 
 ### register on containerd
 
