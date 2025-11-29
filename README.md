@@ -10,12 +10,17 @@
 
 to consider:
 
-* is it worthy to implementa micrun a **common runtime** which is capable of dealing with Linux OCI images?
+* is it **worthy?** to implementa micrun a **common runtime** which is capable of dealing with Linux OCI images?
 > 1. ~~implement it manually~~
-> 2. send request to other runtimes: lcr, runc, crun, gvisor, youki, etc.. , filter by annotations
+> 2. send request to other runtimes: lcr, runc, crun, gvisor, youki, etc.. when container is a standard Linux OCI image, filtered by annotations
      if annotations contain neither `defs.MicranAnnotationPrefix` nor `Infra container annotation`, transfer tasks to external runtime
-     "crun or lcr" would be good for embedded system
-> 3. 
+
+* youki (0.5.7, arm64, musl), binary size 5.6MB; about `200%` speed of `runc`; repo activity: pretty active but on an obivious decline; slow to build (rustc)
+* crun (1.25.1, arm64, glibc), binary size 3.1MB; about `400%` speed of `runc`; repo activity: pretty active;
+* lcr
+* ==> **crun** is preferred: lightweight, fast and fit with openEuler Embedded building tools
+
+3. 
 
 # micrun container runimte
 
@@ -122,7 +127,7 @@ this minimal preview version, I remain the codes struct simple and modular:
 ### shim
 #### shimIO
 
-why and how we handle IO in shim package
+why and how we handle IO in shim package?
 
 #### sandbox
 
@@ -131,6 +136,7 @@ why maintain a sandbox struct, when containerd SandboxAPI is not enabled?
 > migrate to containerd SandboxAPI is the future,
 > and manager single container, pod container inside sandbox is not troublesome, so we did it.
 
+### container IO
 
 ### mount
 
@@ -273,3 +279,18 @@ An approach is to  maintain a filesystem definitions in containerd source: bad p
 
 
 ### Snapshot
+
+### Metrics
+
+---
+
+### CRI and Runtime
+
+From cloud native echo architecture, although, there is no need to concern how Kubernetes interactive with low-level container runtime, for there is a container endpoint(like containerd) serve as an agent, 
+receiving CRI from Kubernetes, convert them into runtime tasksAPI, we have to know what does CRI do
+
+#### CRI list
+
+#### event 
+
+#### CNI and Netns

@@ -147,10 +147,11 @@ func createPodContainer(ctx context.Context, s *shimService, r *taskAPI.CreateTa
 	log.Debug("rootfs mounted for pod container, showing rootfs contents: ")
 	utils.TravelDir(rootfsPath)
 
-	return createContainerInSandbox(ctx, s.sandbox, *ociSpec, *rootfs, r.ID, bundlePath, s.config, disableOutput)
+	return createPodContainerInSandbox(ctx, s.sandbox, *ociSpec, *rootfs, r.ID, bundlePath, s.config, disableOutput)
 }
 
 // mountRootfs mounts the container's root filesystem.
+// TODO: **Important**: need mounting samples
 func mountRootfs(rootfsPath string, rootfs []*types.Mount) error {
 	// NOTICE: Only one rootfs is supported.
 	if len(rootfs) != 1 {
@@ -163,8 +164,8 @@ func mountRootfs(rootfsPath string, rootfs []*types.Mount) error {
 	return nil
 }
 
-// createContainerInSandbox creates a container within an existing sandbox.
-func createContainerInSandbox(ctx context.Context, sandbox cntr.SandboxTraits,
+// createPodContainerInSandbox creates a container within an existing sandbox.
+func createPodContainerInSandbox(ctx context.Context, sandbox cntr.SandboxTraits,
 	ocispec specs.Spec, rootfs cntr.RootFs,
 	containerID, bundlePath string, runtimeConfig *oci.RuntimeConfig, disableOutput bool) error {
 
