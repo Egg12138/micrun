@@ -12,6 +12,7 @@ import (
 	"time"
 
 	cntr "micrun/pkg/micantainer"
+	oci "micrun/pkg/oci"
 	"micrun/pkg/utils"
 
 	"github.com/containerd/containerd/api/events"
@@ -253,6 +254,12 @@ func (s *shimService) StartShim(ctx context.Context, opts shimv2.StartOpts) (_ s
 
 	if err = shimv2.WriteAddress("address", sockAddr); err != nil {
 		return "", err
+	}
+
+	// best effort
+	err = setupStateDir()
+	if err != nil {
+		log.Warnf("failed to setup micrun state directory: %v", err)
 	}
 
 	return sockAddr, nil

@@ -7,6 +7,7 @@ import (
 	log "micrun/logger"
 	cntr "micrun/pkg/micantainer"
 	oci "micrun/pkg/oci"
+	"micrun/pkg/pedestal"
 	"micrun/pkg/utils"
 	"path/filepath"
 
@@ -16,10 +17,11 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
+// create is the internal implementation for the Create RPC. It handles sandbox and container creation.
+// there is no "Sandbox" inside a OCI image
+// rootfsPath is <bundle>/rootfs, whatever containerType is.
+// typically, bundle = /var/lib/containerd/io.containerd.runtime.v2.task/<namespace>/<containerd_id>, mounted from r.Rootfs by runtime
 func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (*shimContainer, error) {
-	if err := setupStateDir(); err != nil {
-		log.Debugf("failed to setup micrun state directory: %v", err)
-	}
 
 	rootfs := cntr.RootFs{}
 	// the first of r.Rootfs is the bundle rootfs
@@ -46,7 +48,7 @@ func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (
 	rootfsPath := filepath.Join(r.Bundle, "rootfs")
 	runtimeConfig, err := loadRuntimeConfig(s, r, ociSpec.Annotations)
 
-	if err := handleContainerTypeCreation(ctx, s, containerType, r, ociSpec, runtimeConfig, bundlePath, rootfsPath, disableOutput, &rootfs); err != nil {
+	if err := setupContainer(ctx, s, containerType, r, ociSpec, runtimeConfig, bundlePath, rootfsPath, disableOutput, &rootfs); err != nil {
 		return nil, err
 	}
 
@@ -64,7 +66,7 @@ func create(ctx context.Context, s *shimService, r *taskAPI.CreateTaskRequest) (
 	return container, nil
 }
 
-func handleContainerTypeCreation(ctx context.Context, s *shimService, containerType cntr.ContainerType,
+func setupContainer(ctx context.Context, s *shimService, containerType cntr.ContainerType,
 	r *taskAPI.CreateTaskRequest, ociSpec *specs.Spec, runtimeConfig *oci.RuntimeConfig,
 	bundlePath, rootfsPath string, disableOutput bool, rootfs *cntr.RootFs) error {
 	switch containerType {
@@ -145,13 +147,11 @@ func createPodContainer(ctx context.Context, s *shimService, r *taskAPI.CreateTa
 	}()
 
 	log.Debug("rootfs mounted for pod container, showing rootfs contents: ")
-	utils.TravelDir(rootfsPath)
 
 	return createPodContainerInSandbox(ctx, s.sandbox, *ociSpec, *rootfs, r.ID, bundlePath, s.config, disableOutput)
 }
 
 // mountRootfs mounts the container's root filesystem.
-// TODO: **Important**: need mounting samples
 func mountRootfs(rootfsPath string, rootfs []*types.Mount) error {
 	// NOTICE: Only one rootfs is supported.
 	if len(rootfs) != 1 {
@@ -165,13 +165,14 @@ func mountRootfs(rootfsPath string, rootfs []*types.Mount) error {
 }
 
 // createPodContainerInSandbox creates a container within an existing sandbox.
+// TODO: if ped=xen, cpupool is great to use
 func createPodContainerInSandbox(ctx context.Context, sandbox cntr.SandboxTraits,
 	ocispec specs.Spec, rootfs cntr.RootFs,
 	containerID, bundlePath string, runtimeConfig *oci.RuntimeConfig, disableOutput bool) error {
 
 	var defaultFirmware string
 	if sandbox != nil {
-		if fw, err := sandbox.Annotation(defs.FirmwarePath); err == nil {
+		if fw, err := sandbox.Annotation(defs.FirmwarePathAnno); err == nil {
 			defaultFirmware = fw
 		}
 	}
@@ -183,7 +184,6 @@ func createPodContainerInSandbox(ctx context.Context, sandbox cntr.SandboxTraits
 
 	containerConfig.Rootfs = rootfs
 
-	// Validate firmware path before creating container in sandbox
 	if err := validateFirmwareForContainer(containerConfig); err != nil {
 		return fmt.Errorf("firmware validation failed for container %s: %w", containerID, err)
 	}
@@ -244,12 +244,44 @@ func createSandbox(ctx context.Context, ocispec *specs.Spec,
 
 	log.Debugf("Sandbox <%s> created.", sandbox.SandboxID())
 	containers := sandbox.GetAllContainers()
-	for _, c := range containers {
-		log.Debugf("Detect inside sandbox <%s>: container %s.", c.ID(), sandbox.SandboxID())
-	}
 
 	if len(containers) != 1 {
 		return nil, fmt.Errorf("container list from sandbox is wrong, expecting only one container, got %d", len(containers))
 	}
 	return sandbox, nil
+}
+
+func validateFirmwareForContainer(config *cntr.ContainerConfig) error {
+	if config.IsInfra {
+		log.Debugf("skipping firmware validation for infra container")
+		return nil
+	}
+
+	// TODO: use multierr
+	var err error
+	if cntr.HostPedType == pedestal.Xen {
+		if err = validate(config.PedestalConf); err != nil {
+			log.Errorf("xen image file validation failed %v", err)
+		}
+	}
+	err = validate(config.ImageAbsPath)
+	if err != nil {
+		return fmt.Errorf("failed to validate contaienr image files: %v", err)
+	}
+
+	return nil
+}
+
+func validate(p string) error {
+	if p == "" {
+		return fmt.Errorf("image path is empty")
+	}
+
+	if !utils.FileExist(p) {
+		return fmt.Errorf("file not exist: %s", p)
+	}
+	if !utils.IsRegular(p) {
+		return fmt.Errorf("image file type is not expected: %s", p)
+	}
+	return nil
 }

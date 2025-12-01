@@ -45,6 +45,7 @@ var (
 	EmptyContainerID  = new(invalid, "empty container id")
 	EmptySandboxID    = new(invalid, "empty sandbox id")
 	AlreadyExists     = new(alreadyExists, "already exists")
+	Missing           = new(notFound, "target is empty or not existing")
 	ContainerNotFound = new(notFound, "container not found")
 	SandboxNotFound   = new(notFound, "sandbox is nil")
 	SandboxDown       = new(unexpectedStatus, "sandbox is not running")

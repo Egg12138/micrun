@@ -2,9 +2,9 @@ package defs
 
 // Client default values.
 const (
-	// pass "<bundle>/rootfs/<DefaultXenBin>" to pedestalCfg for xen-mica case
+	// pass "<bundle>/rootfs/<DefaultXenImg>" to pedestalCfg for xen-mica case
 	// all these default values should be in configuration
-	DefaultXenBin       = "image.bin"
+	DefaultXenImg       = "image.bin"
 	DefaultFirmwareName = "firmware.elf"
 	DefaultMinMemMB     = 16
 )

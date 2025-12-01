@@ -13,12 +13,12 @@ func (n *NetworkConfig) NetworkCleanup(id string) error {
 		return nil
 	}
 
-	if err := netns.Cleanup(id, n.HolderPid)l err != nil {
+	if err := netns.Cleanup(id, n.HolderPid); err != nil {
 		return err
 	}
 
 	n.NetworkID = ""
 	n.NetworkCreated = false
-	n.HodlerPid = 0
+	n.HolderPid = 0
 	return nil
 }

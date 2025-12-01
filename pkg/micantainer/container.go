@@ -22,7 +22,6 @@ type Container struct {
 	rootfs        RootFs
 	containerPath string // The path relative to the root bundle: <bundleRoot>/<sandboxID>/<containerID>.
 	state         ContainerState
-	taskInfo      RTOSTask
 	exitNotifier  chan struct{}
 	exitOnce      sync.Once
 }

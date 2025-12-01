@@ -10,6 +10,9 @@
 
 to consider:
 
+* update mica-image-builder:
+> bundle content: add a client.conf
+> rename to micrun-image-builder
 * is it **worthy?** to implementa micrun a **common runtime** which is capable of dealing with Linux OCI images?
 > 1. ~~implement it manually~~
 > 2. send request to other runtimes: lcr, runc, crun, gvisor, youki, etc.. when container is a standard Linux OCI image, filtered by annotations

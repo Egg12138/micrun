@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	er "micrun/errors"
 	log "micrun/logger"
 	"micrun/pkg/utils"
 )
@@ -12,21 +13,22 @@ const clientConfName = "client.conf"
 
 // ContainerLayer captures overrides sourced from client.conf or similar files.
 type ContainerLayer struct {
-	FirmwarePath string
+	ImageAbsPath string
 	PedestalType string
 	PedestalConf string
 	OS           string
 }
 
-// PredefinedConfLayer parses bundleRootfs/client.conf and returns overrides, if any.
-// should be the last fallback, if no other overrides are found.
-func PredefinedConfLayer(rootfs string) (ContainerLayer, error) {
+// FallbackConfLayer parses bundleRootfs/client.conf and returns overrides, if any.
+// should be the final fallback, if no other overrides are found.
+// mirun-image-builder may not include client.conf file in bundle due to size concerns
+func FallbackConfLayer(dir string) (ContainerLayer, error) {
 	var layer ContainerLayer
-	if strings.TrimSpace(rootfs) == "" {
-		return layer, nil
+	clientConf := filepath.Join(dir, clientConfName)
+	if strings.TrimSpace(dir) == "" || !utils.FileExist(clientConf) {
+		return layer, er.Missing
 	}
 
-	clientConf := filepath.Join(rootfs, clientConfName)
 	// whitelist the [Mica] section; utils.ParseConfigINI lowercases section names.
 	fields, err := utils.ParseINI(clientConf, []string{"mica"})
 	if err != nil {
@@ -34,11 +36,11 @@ func PredefinedConfLayer(rootfs string) (ContainerLayer, error) {
 		return layer, nil
 	}
 	if len(fields) == 0 {
-		return layer, nil
+		return layer, er.Missing
 	}
 
 	if v := strings.TrimSpace(fields["clientpath"]); v != "" {
-		layer.FirmwarePath = v
+		layer.ImageAbsPath = v
 	}
 	if v := strings.TrimSpace(fields["pedestal"]); v != "" {
 		layer.PedestalType = v
