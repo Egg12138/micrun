@@ -5,6 +5,14 @@ import (
 	"sync"
 )
 
+// Status is a graph of the sanbox, contains more than state
+type SandboxStatus struct {
+	ContainersState []ContainerStatus
+	Annotations     map[string]string
+	ID              string
+	State           SandboxState
+}
+
 // expand fields of sandboxconfigs as sandbox memebers
 type Sandbox struct {
 	ctx context.Context
@@ -12,7 +20,7 @@ type Sandbox struct {
 	sync.Mutex
 	// fs, storage, devices, volumes...
 	// monitor
-	resManager SandboxAgent
+	resManager SandboxResource
 	config     *SandboxConfig
 	containers map[string]*Container
 	id         string

@@ -4,6 +4,8 @@ import (
 	ped "micrun/pkg/pedestal"
 )
 
+// NOTICE:
+// in current minimal branch, micrun remove sandbox resource fields, and workload statsitics,
 type SandboxConfig struct {
 	ID                 string
 	Hostname           string
