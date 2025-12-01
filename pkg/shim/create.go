@@ -14,6 +14,7 @@ import (
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/mount"
+	"github.com/containerd/typeurl/v2"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -284,4 +285,24 @@ func validate(p string) error {
 		return fmt.Errorf("image file type is not expected: %s", p)
 	}
 	return nil
+}
+
+// getConfigPathFromOptions extracts the config path from CRI options.
+func getConfigPathFromOptions(options typeurl.Any) (string, error) {
+	v, err := typeurl.UnmarshalAny(options)
+	if err != nil {
+		return "", err
+	}
+
+	// Try current CRI options format.
+	if option, ok := v.(*crioption.Options); ok {
+		return option.ConfigPath, nil
+	}
+
+	// Optional backward compatibility via build tag 'oldcri'.
+	if p, ok := getConfigPathFromOldCRI(v); ok {
+		return p, nil
+	}
+
+	return "", nil
 }

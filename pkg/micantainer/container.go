@@ -42,8 +42,21 @@ type ContainerConfig struct {
 	PedestalConf string      `json:"pedestal_conf"`
 	OS           string      `json:"os"`
 
+	// VCPUNum is the number of virtual CPUs. Matches the configured CPU capacity when not pinning; otherwise, equals the size of the cpuset.
+	VCPUNum uint32 `json:"vcpu_num"`
+	// PCPUNum is the number of allocated physical CPUs.
+	// TODO: Implement for openAMP and Jailhouse cases.
+	PCPUNum int `json:"ncpu"`
+	// MaxVcpuNum is the pedestal max virtual CPUs configured for this container.
+	MaxVcpuNum uint32 `json:"max_vcpu_num"`
+
+	// MemoryThresholdMB is the pedestal maximum allocable memory in MiB.
+	MemoryThresholdMB uint32 `json:"memory_threshold"`
+
 	// 	// LegacyPty specifies whether to use legacy PTY mode (true) or micad's rpmsg PTY (false)
 	LegacyPty bool `json:"legacy_pty"`
 
 	// Cmdline is the boot command line for the guest.
+	// TODO: consider passing the cmdline as a parameter to the pty, acting as if we "execute" command
+	Cmdline string `json:"cmdline"`
 }

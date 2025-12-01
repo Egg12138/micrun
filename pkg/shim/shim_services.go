@@ -378,7 +378,6 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 	return &taskAPI.CreateTaskResponse{
 		Pid: pid,
 	}, nil
-	return nil, nil
 }
 func (s *shimService) Start(context.Context, *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 

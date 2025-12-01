@@ -152,9 +152,9 @@ func newFileIO(ctx context.Context, stdio *stdioInfo, uri *url.URL) (*fileIO, er
 	return nil, errdefs.ErrNotImplemented
 }
 
-// NewBinaryIO runs a custom binary process for pluggable shim logging
-// containerd NewBinaryIO(ctx context.Context, id string, uri *url.URL) (_ runc.IO, err error)
-func NewBinaryIO(ctx context.Context, id string, uri *url.URL) (bio *binaryIO, err error) {
+// newBinaryIO runs a custom binary process for pluggable shim logging
+// containerd newBinaryIO(ctx context.Context, id string, uri *url.URL) (_ runc.IO, err error)
+func newBinaryIO(ctx context.Context, ns, id string, uri *url.URL) (bio *binaryIO, err error) {
 	return nil, errdefs.ErrNotImplemented
 }
 

@@ -5,6 +5,8 @@
 * fix io bugs
 * better netns handling
 * fix metrics bugs
+* refactor codes -> get a shrinked minimal version
+* consider a proper managment stragety for mica-image-builder (in yocto), uv and poetry may be not a good choice for this case
 
 ## todos in weeks
 
@@ -18,9 +20,9 @@ to consider:
 > 2. send request to other runtimes: lcr, runc, crun, gvisor, youki, etc.. when container is a standard Linux OCI image, filtered by annotations
      if annotations contain neither `defs.MicranAnnotationPrefix` nor `Infra container annotation`, transfer tasks to external runtime
 
-* youki (0.5.7, arm64, musl), binary size 5.6MB; about `200%` speed of `runc`; repo activity: pretty active but on an obivious decline; slow to build (rustc)
+* youki (0.5.7, arm64, musl), binary size 5.6MB; about `200%` speed of `runc`; repo activity: pretty active but on an obivious decline; slow to build in yocto (rustc + downloading dependencies)
 * crun (1.25.1, arm64, glibc), binary size 3.1MB; about `400%` speed of `runc`; repo activity: pretty active;
-* lcr
+* lcr (together with iSulad, not a common choice for other container engine)
 * ==> **crun** is preferred: lightweight, fast and fit with openEuler Embedded building tools
 
 3. 
