@@ -1,6 +1,7 @@
 package micantainer
 
 import (
+	log "micrun/logger"
 	ped "micrun/pkg/pedestal"
 )
 
@@ -14,9 +15,22 @@ type SandboxConfig struct {
 	ContainerConfigs   map[string]*ContainerConfig
 	Annotations        map[string]string
 	SharedMemorySize   uint64
-	SandboxResources   SandboxResourceSizing
 	EnableVCPUsPining  bool
 	StaticResourceMgmt bool
 	HugePageSupport    bool
 	InfraOnly          bool
+}
+
+func (sc *SandboxConfig) valid() bool {
+	if sc.ID == "" {
+		log.Warn("sandbox ID is empty")
+		return false
+	}
+
+	if sc.PedConfig.PedType == ped.Unsupported && !sc.InfraOnly {
+		log.Warn("pedestal type is unsupported")
+		return false
+	}
+
+	return true
 }

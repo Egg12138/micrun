@@ -52,14 +52,14 @@ func (s *SandboxState) Transition(old StateString, new StateString) error {
 		return fmt.Errorf("invalid state: %v", s)
 	}
 
-	return s.State.validTransition(old, new)
+	return s.State.transition(old, new)
 }
 
 func (s *StateString) valid() bool {
 	return *s != StateDown
 }
 
-func (s *StateString) validTransition(old StateString, new StateString) error {
+func (s *StateString) transition(old StateString, new StateString) error {
 	if *s != old {
 		return fmt.Errorf("mismatched state: %s (expecting: %v)", *s, old)
 	}
