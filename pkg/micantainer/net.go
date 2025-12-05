@@ -8,6 +8,13 @@ type NetworkConfig struct {
 	HolderPid      int    `json:"holder_pid,omitempty"`
 }
 
+func (n *NetworkConfig) NetworkIsCreated() bool {
+	if n == nil {
+		return false
+	}
+	return n.NetworkCreated
+}
+
 func (n *NetworkConfig) NetworkCleanup(id string) error {
 	if n == nil {
 		return nil
@@ -21,4 +28,11 @@ func (n *NetworkConfig) NetworkCleanup(id string) error {
 	n.NetworkCreated = false
 	n.HolderPid = 0
 	return nil
+}
+
+func (n *NetworkConfig) NetID() string {
+	if n == nil {
+		return ""
+	}
+	return n.NetworkID
 }

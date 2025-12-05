@@ -15,7 +15,7 @@ type SandboxConfig struct {
 	ContainerConfigs   map[string]*ContainerConfig
 	Annotations        map[string]string
 	SharedMemorySize   uint64
-	EnableVCPUsPining  bool
+	EnableVCPUsPinning bool
 	StaticResourceMgmt bool
 	HugePageSupport    bool
 	InfraOnly          bool

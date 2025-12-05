@@ -230,7 +230,7 @@ func createPodContainerInSandbox(ctx context.Context, sandbox cntr.SandboxTraits
 		}
 	}
 
-	containerConfig, err := oci.ContainerConfig(containerID, bundlePath, ocispec, cntr.PodContainer, disableOutput, defaultFirmware, runtimeConfig)
+	containerConfig, err := oci.ParseContainerCfg(containerID, bundlePath, ocispec, cntr.PodContainer, disableOutput, defaultFirmware, runtimeConfig)
 	if err != nil {
 		return fmt.Errorf("failed to create container config: %w", err)
 	}
@@ -326,17 +326,8 @@ func validateFirmwareForContainer(config *cntr.ContainerConfig) error {
 }
 
 func validate(p string) error {
-	if p == "" {
-		return fmt.Errorf("image path is empty")
-	}
-
-	if !utils.FileExist(p) {
-		return fmt.Errorf("file not exist: %s", p)
-	}
-	if !utils.IsRegular(p) {
-		return fmt.Errorf("image file type is not expected: %s", p)
-	}
-	return nil
+	_, err := utils.EnsureRegularFilePath(p)
+	return err
 }
 
 // getConfigPathFromOptions extracts the config path from CRI options.

@@ -17,3 +17,17 @@ const (
 	// UnknownContainerType specifies a container that provides a container type annotation, but it is unknown.
 	UnknownContainerType ContainerType = "unknown_container_type"
 )
+
+func (ct ContainerType) IsRegularContainer() bool {
+	return ct == SingleContainer
+}
+
+// CanBeSandbox checks if the container type can be a sandbox.
+// A pod container cannot be converted into a sandbox.
+func (ct ContainerType) CanBeSandbox() bool {
+	return ct == PodSandbox || ct == SingleContainer
+}
+
+func (ct ContainerType) IsCriSandbox() bool {
+	return ct == PodSandbox
+}

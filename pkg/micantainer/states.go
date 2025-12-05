@@ -97,3 +97,13 @@ func (s *StateString) transition(old StateString, new StateString) error {
 
 	return fmt.Errorf("cannot transition from state %v to %v", s, new)
 }
+
+// Valid checks if the container state is valid.
+func (s *ContainerState) Valid() bool {
+	return s.State.valid()
+}
+
+// ValidTransition checks if a state transition is valid.
+func (s *ContainerState) Transition(old StateString, new StateString) error {
+	return s.State.transition(old, new)
+}

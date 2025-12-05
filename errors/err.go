@@ -4,6 +4,10 @@ import (
 	"fmt"
 )
 
+// TODO: refactor this packages
+// support using multierror and errors wrap in an easy way
+// prompt error message more friendly
+// better stack trace report
 type ErrCode int
 type MicranErr struct {
 	Code ErrCode
@@ -50,7 +54,7 @@ var (
 	SandboxNotFound   = new(notFound, "sandbox is nil")
 	SandboxDown       = new(unexpectedStatus, "sandbox is not running")
 	IOClosed          = new(ioClose, "io closed")
-	NotRunning        = new(unexpectedStatus, "container is not running")
+	ContainerDown     = new(unexpectedStatus, "container is not running")
 
 	PedestalMismatched = new(invalid, "host pedestal type mismatch with image pedestal type")
 	ErrOutputParse     = new(parseFailed, "failed to parse command output")

@@ -11,6 +11,7 @@ import (
 )
 
 // ShimName injected in Makefile.
+// TODO: change to const value, after MicRun name is stable
 var ShimName string
 
 func main() {

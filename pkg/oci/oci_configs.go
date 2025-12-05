@@ -251,7 +251,7 @@ func prepCache(id, pedconf, elfPath string) (string, string, error) {
 
 // container bundle rootfs is already mounted
 // hence we can check bundle contents for container configuration
-func ContainerConfig(id, bundle string, ocispec specs.Spec, ct cntr.ContainerType, detach bool, defaultFirmwarePath string, runtimeConfig *RuntimeConfig) (*cntr.ContainerConfig, error) {
+func ParseContainerCfg(id, bundle string, ocispec specs.Spec, ct cntr.ContainerType, detach bool, defaultFirmwarePath string, runtimeConfig *RuntimeConfig) (*cntr.ContainerConfig, error) {
 	baseRootfs := bundleRootfs(bundle)
 
 	getAnnotation := func(key string) (string, bool) {
@@ -346,7 +346,7 @@ func ContainerConfig(id, bundle string, ocispec specs.Spec, ct cntr.ContainerTyp
 
 func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID string, detach bool) (cntr.SandboxConfig, error) {
 	// generate sandbox container config
-	containerConfig, err := ContainerConfig(sbContainerID, bundle, *ocispec, cntr.PodSandbox, detach, rc.DefaultFirmwarePath, &rc)
+	containerConfig, err := ParseContainerCfg(sbContainerID, bundle, *ocispec, cntr.PodSandbox, detach, rc.DefaultFirmwarePath, &rc)
 	if err != nil {
 		return cntr.SandboxConfig{}, err
 	}
@@ -384,14 +384,11 @@ func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID 
 		Annotations: map[string]string{
 			defs.BundlePathKey: bundle,
 		},
-		SandboxResources: cntr.SandboxResourceSizing{
-			WorkloadCPUs:  rc.SandboxCPUs,
-			WorkloadMemMB: rc.SandboxMemMB,
-		},
 
 		StaticResourceMgmt: staticResMngt,
 		HugePageSupport:    hugePage,
-		EnableVCPUsPining:  false,
+		EnableVCPUsPinning: false,
+		SharedCPUPool:      false,
 		InfraOnly:          containerConfig.IsInfra,
 	}
 
@@ -510,7 +507,9 @@ func resolveMaxVcpu(annotations map[string]string, runtimeCfg *RuntimeConfig) ui
 	return defaultMaxContainerVCPUs
 }
 
+// rename -> calculateClientMemThreshold
 func calculatePedMaxMemory(config *cntr.ContainerConfig, runtimeCfg *RuntimeConfig) uint32 {
+	// current RTOS max memory, <= memory threshold
 	maxMem := config.MemoryLimitMiB()
 	if maxMem == 0 {
 		maxMem = config.MemoryReservationMiB()
@@ -521,12 +520,9 @@ func calculatePedMaxMemory(config *cntr.ContainerConfig, runtimeCfg *RuntimeConf
 	if maxMem == 0 {
 		maxMem = defs.DefaultMinMemMB
 	}
-	if runtimeCfg != nil && runtimeCfg.MaxContainerMemMB > 0 && maxMem > runtimeCfg.MaxContainerMemMB {
-		maxMem = runtimeCfg.MaxContainerMemMB
-	}
 
 	if maxMem > math.MaxUint32/2 {
-		return math.MaxUint32
+		return math.MaxUint32 - 1
 	}
 
 	doubled := maxMem * 2
@@ -566,7 +562,15 @@ func applySandboxAnnotations(ocispec specs.Spec, cfg *cntr.SandboxConfig) {
 		// allowlist: only handle known, safe sandbox-level toggles
 		case defs.RuntimePrefix + "enable_vcpus_pinning":
 			if b, err := strconv.ParseBool(value); err == nil {
-				cfg.EnableVCPUsPining = b
+				cfg.EnableVCPUsPinning = b
+			} else {
+				log.Debugf("invalid bool for %s: %s", key, value)
+			}
+			cfg.Annotations[key] = value
+
+		case defs.RuntimePrefix + "shared_cpu_pool":
+			if b, err := strconv.ParseBool(value); err == nil {
+				cfg.SharedCPUPool = b
 			} else {
 				log.Debugf("invalid bool for %s: %s", key, value)
 			}
