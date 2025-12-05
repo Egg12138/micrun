@@ -1,6 +1,8 @@
 # todos
+
 ## todos in days
 
+* AI 整理该文档
 * yocto all-in-one building
 * fix io bugs
 * better netns handling
@@ -595,6 +597,8 @@ receiving CRI from Kubernetes, convert them into runtime tasksAPI, we have to kn
 
 #### CNI and Netns
 
+可否不再使用 netns 呢？
+完全可以！
 
 
 ---
@@ -603,3 +607,137 @@ receiving CRI from Kubernetes, convert them into runtime tasksAPI, we have to kn
 
 micrun 是 shim+runtime，其模型是和容器1:1的，这意味着对 micrun 的配置都是 对单个容器的设置；
 如果需要全局的通用改变，应该对daemon (micad) 做配置，并且让micrun可以感知到。否则对于比如 `shared_cpu_pool` 这样的全局设定，micrun难以处理
+
+
+
+
+# containerd actions
+
+“shimv2 runtime”在 containerd 中通常暴露两类 gRPC/ttrpc 接口：
+sandbox-level ttrpc API（sandbox service）：CreateSandbox / StartSandbox / StopSandbox / SandboxStatus / WaitSandbox / Platform / PingSandbox / ShutdownSandbox / SandboxMetrics 等（见 bridge.go 的包装），用于沙箱生命周期管理（pod-sandbox 级别）。
+task/container-level API（task service / container service）：Create (task), Start, Kill, Delete, Wait, State, Pids, Stats, Exec 等，用于单个 container/task 的创建/运行/停止/查询。
+containerd 在 CRI 层（RunPodSandbox 等）会经由内部的 sandbox controller / sandboxService 把请求转成对 shim 的上述 RPC 调用；同时 containerd 也会通过自身的 task service 调用触发 shim 对具体 OCI runtime 的 runc/runhcs 操作（即 shim 会接收 task API 调用）。
+二、RunPodSandbox()（创建并启动 pod sandbox） —— containerd 对 shimv2 发出的 RPC（按常见实现路径、时序） 主要 RPC（ttrpc / sandbox API）：
+
+CreateSandbox(CreateSandboxRequest)
+
+目的：让 shim/Controller 初始化 sandbox 相关环境（可用于 mount、prepare rootfs、创建/使用 network namespace 等）。
+传入信息（常见 / containerd 端会传的）：PodSandboxConfig（metadata、labels、annotations、namespace、runtime options）、可能的 “NetNSPath”（如果 containerd 先创建或传入 netns）、Options（runtime-specific options）。（core/sandbox/controller.go 中有 WithNetNSPath、WithOptions 等 create 选项。）
+期望响应：成功/错误。Create 阶段通常不会把 sandbox 标记为 ready，但会准备环境并可能返回创建中元信息（取决实现）。
+StartSandbox(StartSandboxRequest) -> StartSandboxResponse
+
+目的：让 shim 启动 sandbox “进程/任务”（即 sandbox container / pause container），并返回 runtime-side 的运行信息。containerd 将把 Start 返回的控制信息记录到 sandbox store（见 sandbox_run.go：若 ctrl.Address 非空则保存为 sandbox.Endpoint）。
+重要响应字段（ControllerInstance / StartSandboxResponse）：
+Address（shim 对外的 address / endpoint，用于后续与该 shim 对话），
+Pid（sandbox process pid），
+Version（shim/protocol版本），
+Labels（可能含 selinux_label 等扩展字段）。
+containerd 期待：Start 返回时 sandbox 已经“可用/可被管理”（若需要等待进入 ready 还会有 Ping 或 Status 调用）。
+Platform(PlatformRequest) / SandboxPlatform（containerd 可能调用以确定 sandbox 报告的平台）
+
+目的：获取 sandbox 报告的 platform（OS/Arch）；containerd 会据此决定 metrics/转换/处理方式。
+期望响应：PlatformResponse（包含 OS/Arch）。
+PingSandbox / SandboxStatus（可选/校验）
+
+目的：校验 sandbox 是否“就绪”、获取更多状态（包括可能的网络状态/annotations/extra info）。containerd 在恢复/查询链路可能会调用 SandboxStatus。
+期望响应：Ping 返回成功或 SandboxStatus 返回包含状态、启动时间、可能的 network info（具体字段取决 shim 的实现/协议版本）。
+另外（伴随 sandbox 的“容器化”启动流程）：
+
+containerd 会在创建 sandbox container（pause）时通过 container/task API 向对应 shim 发起 task 相关 RPC（Create task、Start task）。也就是说，RunPodSandbox 导致的还包括 task-level RPC：
+Task.Create（创建 task）
+Task.Start（启动 task）
+之后 containerd 可能会调用 Task.State / Task.Pids / Task.Stats 等以同步状态。
+时序要点（summary）：
+
+containerd 整体顺序典型为：可能先准备网络（视 CNI 模式） -> CreateSandbox -> StartSandbox -> containerd 在本地创建 containerd container/task（这会转成对 shim 的 Task.Create/Task.Start） -> （后续）调用 SandboxStatus / WaitSandbox 来观察 sandbox。
+
+三、StopContainer()（停止单个 container） —— containerd 对 shimv2 发出的 RPC 在 CRI 的 StopContainer，containerd 的实现会尽量可靠地结束 container，并在必要时强制 kill。对应到 shim/task API，典型调用序列为：
+
+Task.Kill（第一次，signal = SIGTERM 或等同于请求的停止信号）
+
+目的：发送优雅停止信号给容器进程，触发容器内部停机行为。containerd 的 StopContainerRequest 会带超时时间（grace period），containerd 会传递合适信号/参数到 Kill RPC。
+期望响应：成功或错误。若连接在中途关闭，containerd 会有重试逻辑（stopContainerRetryOnConnectionClosed 之类的重试）。
+等待容器退出（Task.Wait / 监听 event）：
+
+containerd 会等待 TaskExit 事件或显式调用 Task.Wait（等待任务退出），以确保容器确实终止。CRi 实现里有等待逻辑并会根据 timeout 强制下一步。
+如果超时未退出 -> 再次 Task.Kill（signal = SIGKILL）以强制终止。
+
+Task.Delete（删除 task）
+
+目的：清理 runtime 状态（删除 runtime 管理的 task），通常 Delete 会被调用以移除容器在 runtime 的记录并释放资源。注：某些实现里 containerd 在某些路径不会显式立刻 Delete，而是依赖事件监控在 TaskExit 后做清理（sandbox_stop.go 中有“task.Delete is not called here because it will be called when event monitor handles TaskExit” 的注释，说明细节会因流程而异）。
+其他/查询 RPC：Task.State、Task.Pids、Task.Stats（用于日志/metrics/状态采集）在停止过程中也可能被调用以判断当前状态。
+
+重试/连接关闭处理：
+
+如果 shim 的 ttrpc 连接被关闭，containerd 有专门的重试/退避（例如 stopSandboxContainerRetryOnConnectionClosed 在 StopSandbox 场景）——StopContainer 的停止路径也会在遇到 ttrpc 连接断开做 retry/backoff。
+四、StopPodSandbox()（停止整个 pod sandbox） —— containerd 对 shimv2 发出的 RPC（总体） 高层流程：
+
+StopPodSandbox 会：
+枚举并强制停止 sandbox 下的所有 containers（对每个 container 使用 StopContainer 路径 -> 导致上面列出的 task.Kill/Wait/Delete 等一系列 RPC）。
+如果 sandbox 本身处于 Ready/Unknown 状态，调用 sandbox controller 的 Stop（对应 shimv2 的 StopSandbox RPC）来停止 sandbox container（pause）及清理 sandbox 层面资源。
+teardown pod network（containerd 自己的 CNI teardown，详见下文）；
+触发 NRI（如果启用）的 StopPodSandbox 通知等。
+具体 shim RPC：
+
+StopSandbox(StopSandboxRequest) -> StopSandboxResponse
+
+目的：通知 shim 停止 sandbox（seding request to sandbox service）。shim 应当终止 sandbox 里运行的 pause/sandbox task（或至少将其置为停止），并清理任何 shim 托管的资源。
+期望响应：成功/错误。containerd 对 StopSandbox 的调用会在遇到 ttrpc 连接关闭时做有限重试（见 stopSandboxContainerRetryOnConnectionClosed 中的 retry loop）。
+伴随的 task-level RPC：当 StopSandbox 导致 sandbox container 停止时，containerd 仍然会收到 TaskExit 事件，并可能调用 Task.Delete、查看 Task.State 等以完成清理。
+
+ShutdownSandbox（在 RemovePodSandbox 或清理时可能被调用）：要求 shim 完全删除/销毁 sandbox（停止所有子任务并释放资源）。
+
+网络（net）相关：containerd 对 runtime（shim）在网络信息与 setup/teardown 上的期待（详细） containerd 在 CRI 模块中管理 Pod 网络与网络状态的交互点较多，关键期待包括：
+
+网络 namespace 的“定位”（NetNSPath）
+
+containerd 的 sandbox 管理结构里保留了 sandbox.NetNS（一个 NetNS object）和 sandbox.NetNSPath 字段（core/sandbox/controller.go 中有 WithNetNSPath 用于传入）。这表示：
+containerd 可能会在外部（由 CNI 或其它机制）创建或管理一个网络命名空间，并将该 netns 的路径（例如 /var/run/netns/<id> 或 /proc/<pid>/ns/net 的路径）传给 sandbox controller（通过 WithNetNSPath），或者
+shim / sandbox controller 本身也可能创建/返回一个 netns path 给 containerd（例如在 StartSandbox 或 SandboxStatus 的响应中包含 netns 路径/标识）。
+containerd 期待的是最终能访问到“sandbox 的 network namespace path”，以便在 teardown 时检查 namespace 是否已关闭或确保正确 cleanup（see StopPodSandbox teardown checks: 在 RemovePodSandbox 会检查 sandbox.NetNS.Closed()，要求 netns 已经 closed）。
+CNIResult / network setup result 的传递与保存
+
+containerd 在 sandbox 的生命周期内会维护 sandbox.CNIResult（见 sandbox_stop.go 中：if sandbox.CNIResult != nil { c.teardownPodNetwork(...) }）。这说明：
+如果 containerd 自己负责调用 CNI plugin 来 setup pod network（常见模式），则 containerd 会把 CNI 的返回结果（包括分配到的 IP、接口名、gateway、routes、DNS 等）保存在 sandbox.CNIResult 里；随后 StopPodSandbox/RemovePodSandbox 会根据该结果执行 teardown（调用 teardownPodNetwork）。
+如果 runtime（shim）选择自己做网络配置，那么它必须把等效信息告诉 containerd（通过 sandbox store extensions / SandboxStatus / annotations / StartSandboxResponse 的 labels/extension 等机制），以便 containerd 在 teardown 时能够获得必要的上下文并调用 teardown（或由 shim 自己在 StopSandbox 时完成 teardown，但 containerd 仍然会基于 sandbox.CNIResult 做额外检查 / teardown）。
+containerd 期待 CNIResult 的结构（至少包含 IP / interface name / namespace/path），并且在 teardown 时能够据此撤销 CNI 配置。
+时序与责任边界（谁做 setup / 谁做 teardown）
+
+两种常见模式： 
+A) containerd-managed CNI（containerd 负责调用 CNI 在 sandbox 启动前后做 setup）：
+containerd 在 StartSandbox/CreateSandbox 的流程中调用 c.setupPodNetwork（或在 StartSandbox 之后、在创建 pause container 之前），保存 CNIResult 到 sandbox.CNIResult，并把 NetNSPath（或 netns fd）传给 shim（CreateSandbox/StartSandbox 可能会收到 NetNSPath）。随后 Stop/Remove 会调用 teardownPodNetwork 使用 sandbox.CNIResult。 B) runtime-managed network（shim 自己做网络）：
+shim 在 CreateSandbox/StartSandbox 内部执行网络 namespace 的创建和接口绑定，并在 SandboxStatus / StartSandboxResponse / extensions 中报告网络信息（IP、NetNSPath 等）。containerd 会读取这些信息并保存；但 containerd 仍然在 Remove/Stop 时检查 sandbox.NetNS 是否已 closed（未关闭则报错），并期望 shim 在 StopSandbox/ShutdownSandbox 时释放 net 资源。
+containerd 的代码显示：StopPodSandbox 会检查 sandbox.NetNS 是否 closed（若未 closed，会在 RemovePodSandbox 时返回错误），并在 sandbox.CNIResult != nil 时调用 teardownPodNetwork。因此 containerd 明确期待要么：
+containerd self has CNIResult and will teardown it, 或
+shim already did network teardown and made netns closed; containerd 会检查 closed 状态并 succeed。
+必须保证的字段与语义（containerd 侧期待）
+
+NetNSPath：能够被访问（或空字符串表示 netns 不可用/已关闭），并且在 Remove 时应处于 closed（或 shim/host 已清理）。
+StopPodSandbox 中的检查逻辑体现了这点：
+在 StopPodSandbox：若 sandbox.NetNS != nil，则先判断 sandbox.NetNS.Closed()；若 closed 则将 sandbox.NetNSPath = ""。在 RemovePodSandbox 前会再次检查 netns closed；如果未 closed，会返回错误 “sandbox network namespace is not fully closed”。
+CNIResult：若不为空（表示 containerd 进行了 CNI setup），containerd 会调用 teardownPodNetwork(ctx, sandbox)；因此 containerd 期待 CNIResult 含有 teardown 所需的全部信息（例如 ifName、CNI result object），并且 teardown 操作要成功。
+timing：containerd 在 StopPodSandbox 的顺序上先停止 containers、再 stop sandbox、再 teardown network（见 stopPodSandbox 的实现顺序）。因此 shim 若在 StopSandbox 时执行网络 teardown，应在 StopSandbox 返回前完成，这样 containerd 的后续检查（NetNS.Closed）才会通过。
+错误 / 重试语义（network 相关）
+
+如果 teardownPodNetwork 失败，StopPodSandbox 会返回错误（并阻止进一步的删除）；containerd 的实现不会忽略 network teardown 的错误（即这被认为是重大失败，需要上报）。
+对于 shim/ttrpc 连接断开的场景，containerd 在停止 sandbox 时会做有限次数的重试（stopSandboxContainerRetryOnConnectionClosed），并且采用退避策略（见实现中的 100ii 毫秒退避例子）。
+六、对 shim 的实现端给出的明确兼容建议（契约式） 为了与 containerd 的 Run/Stop 流程无缝配合，shim（或 sandbox controller）应当满足下列契约：
+
+支持并实现 sandbox ttrpc API（至少 CreateSandbox、StartSandbox、StopSandbox、SandboxStatus/Platform、WaitSandbox、ShutdownSandbox、PingSandbox）。StartSandboxResponse 必须返回 Address / Pid （以便 containerd 保存为 sandbox.Endpoint 并在后续与 shim 通信）。
+在 CreateSandbox/StartSandbox 中接受 containerd 传入的 NetNSPath（若 containerd 提供），并在该 namespace 上正确进行 sandbox/pause container 的配置；或者如果 shim 自己创建 netns，应在 StartSandboxResponse / SandboxStatus 中报告 netns path/标识和网络配置（包含 IP/ifname 等），以便 containerd 记录（或 containerd 能够调用 teardown）。
+在 StopSandbox/ShutdownSandbox 返回前，完成 sandbox-level 的清理（包括确保 netns 已释放或明确标记为 closed，或者将 CNI teardown 的 trigger/信息交回 containerd）。否则 containerd 在 Remove 时可能因为 netns 未 closed 而失败。
+在 task-level 上实现 task API（Create、Start、Kill、Delete、Wait、State、Pids、Stats 等），并保证对 Kill(Delete) 等 RPC 的语义与容器进程生命周期一致（支持优雅终止的 grace period，然后可被强制杀死）。
+在 ttrpc/连接异常时，尽量提供可重连的语义或确保在 StopSandbox/StopContainer 时返回合适的错误码以触发 containerd 的重试逻辑。
+七、常见陷阱 / 注意点（从 containerd 实现角度）
+
+containerd 在 StopPodSandbox 的实现里，先强制停止 containers（逐个 StopContainer），然后才停止 sandbox；因此如果 shim 在 StopSandbox 内部以外停止了子 container（或 race），containerd 仍会可靠地重复尝试停止 containers 并处理可能的 races（CRI 的 StopPodSandbox 是幂等的）。
+如果 shim 并未把网络 teardown 的信息/状态暴露给 containerd（例如没有写入 sandbox.CNIResult 或没有在 SandboxStatus/report 中返回），containerd 可能无法在 Remove 时完成 teardown，从而导致资源泄露或 Remove 失败。
+containerd 对 ttrpc 连接断开的恢复策略是有限重试而非无限重试；shim 不应简单地在 Stop 期间断开连接而不保证资源已清理。
+
+RunPodSandbox 会至少触发：CreateSandbox、StartSandbox、（可能的 Platform/Ping/SandboxStatus）以及随后产生的 task-level Create/Start RPC（shim 将看到 sandbox container 的 task.Create/Start）。StartSandbox 的响应（Address/Pid/Version/labels）是 containerd 记录 sandbox Endpoint/状态的关键。
+StopContainer 会触发 task-level 的 Kill（SIGTERM），等待（Wait / 监听 TaskExit），在超时后再 Kill(SIGKILL)，最后 Delete（清理）——相应 RPC 分别是 Task.Kill、Task.Wait/事件、Task.Delete（并伴随 State/Stats 查询）。containerd 对连接中断有 retry 逻辑。
+StopPodSandbox 会调用 StopSandbox（sandbox API）来停止 sandbox 本身，且在 Stop 成功后或并行会做网络 teardown（若 sandbox.CNIResult 非空）。containerd 期望 shim/控制器要么把 netns/CNIResult 等信息报告出来（以便 containerd teardown），要么自行在 StopSandbox 时完成 teardown 并使 netns closed；containerd 会检查 netns closed 状态并以此作为删除的前置条件之一。
+
+
+影子进程：有这样一个想法：micrun对每一个容器RTOS起一个对应的影子进程，
+但实际上这是不必的，我们直接让micrun shim承担“影子进程”的职责即可。
