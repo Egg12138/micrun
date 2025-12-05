@@ -1,11 +1,14 @@
 package micantainer
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	defs "micrun/definitions"
 	er "micrun/errors"
 	log "micrun/logger"
+	"micrun/pkg/cpuset"
 	"micrun/pkg/libmica"
 	"micrun/pkg/netns"
 	ped "micrun/pkg/pedestal"
@@ -13,10 +16,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"sync"
 	"syscall"
 
+	"github.com/hashicorp/go-multierror"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
 )
@@ -34,8 +38,6 @@ type Container struct {
 	rootfs        RootFs
 	containerPath string // The path relative to the root bundle: <bundleRoot>/<sandboxID>/<containerID>.
 	state         ContainerState
-	exitNotifier  chan struct{}
-	exitOnce      sync.Once
 	infraCmd      *exec.Cmd
 	infraExitCh   chan helperCh
 }
@@ -433,11 +435,6 @@ func (c *Container) create(ctx context.Context) error {
 		return c.setContainerState(ctx, StateReady)
 	}
 
-	rtosTask, err := initContainerTaskInSandbox(c.sandbox, c.config)
-	if err != nil {
-		return err
-	}
-
 	if _, err := c.ensureClientPresence(); err != nil {
 		return err
 	}
@@ -739,4 +736,449 @@ func (c *Container) Status() StateString {
 func (c *Container) State() *ContainerState {
 	c.checkState()
 	return &c.state
+}
+
+// Signal sends a signal to the container.
+// TODO: Implement a POSIX signals hub.
+func (c *Container) Signal(ctx context.Context, signal syscall.Signal) error {
+	if c.sandbox == nil {
+		return fmt.Errorf("container sandbox reference is nil")
+	}
+	if c.sandbox.notOperational() {
+		return fmt.Errorf("sandbox is not running or ready, can not signal container")
+	}
+	currentState, err := c.ensureClientPresence()
+	if err != nil {
+		return err
+	}
+	if currentState != StateRunning && currentState != StateReady && currentState != StatePaused {
+		return fmt.Errorf("client os is not running, ready or paused, can not signal container")
+	}
+
+	return nil
+}
+
+// validOS checks if the OS is in the list of preserved OSes.
+// TODO: RTOS validation list should be coordinates with mica
+func validOS(os string) bool {
+	ret := utils.InList(defs.TrustyOS[:], os)
+	return ret
+}
+
+// validComponent checks if a component file is a regular file.
+func validComponent(component string) bool {
+	if !utils.IsRegular(component) {
+		return false
+	}
+
+	hostArch := runtime.GOARCH
+
+	if match, _ := utils.IsELFForHost(component); match {
+		return true
+	}
+
+	// check for arm64 xen client image
+	if hostArch == "arm64" {
+		if isArm64XenImg(component) {
+			return true
+		}
+	}
+
+	return true
+}
+
+func isArm64XenImg(firmware string) bool {
+	if runtime.GOARCH != "arm64" {
+		return false
+	}
+
+	fh, err := os.Open(firmware)
+	defer fh.Close()
+	if err == nil {
+		// check magic number
+		buf := make([]byte, 0x40)
+		if n, _ := fh.Read(buf); n > 0x3C {
+			if bytes.Contains(buf, []byte("ARMd")) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// validFirmware checks if the firmware file is valid.
+func validFirmware(firmware string) bool {
+	return validComponent(firmware)
+}
+
+// validBinfile checks if the binary file is valid.
+// For Xen, this is typically image.bin.
+func validBinfile(binpath string) bool {
+	return validComponent(binpath)
+}
+
+// validMicaContainer checks if the container configuration is valid for mica.
+// NOTICE: Xen is the only supported pedestal for now.
+func (c *Container) validMicaContainer() bool {
+	if c.config != nil && c.config.IsInfra {
+		return true
+	}
+
+	osValid := validOS(c.GetOS())
+	fwValid := validFirmware(c.GetFirmwarePath())
+	if HostPedType == ped.Xen {
+		binFile := validBinfile(c.GetPedestalConf())
+		fwValid = binFile && fwValid
+	}
+	judge := osValid && fwValid
+	log.Debugf("container validation: os=%v, firmware=%v, valid=%v", osValid, fwValid, judge)
+
+	return judge
+}
+
+// setContainerState updates the container's state and persists it.
+func (c *Container) setContainerState(ctx context.Context, state StateString) error {
+	if state == "" {
+		return fmt.Errorf("state cannot be empty")
+	}
+
+	if c.sandbox == nil {
+		return fmt.Errorf("container sandbox reference is nil")
+	}
+
+	c.state.State = state
+	c.updateExitNotifier(state)
+	if err := c.SaveState(); err != nil {
+		log.Errorf("failed to save container state: %v", err)
+		return err
+	}
+	if err := c.sandbox.StoreSandbox(ctx); err != nil {
+		log.Errorf("failed to save sandbox state: %v", err)
+		return err
+	}
+	return nil
+}
+
+func (c *Container) checkState() StateString {
+	if c == nil || c.id == "" {
+		return StateDown
+	}
+
+	if c.config != nil && c.config.IsInfra {
+		return c.state.State
+	}
+
+	if libmica.ClientNotExist(c.id) {
+		if c.state.State != StateDown {
+			if err := c.setContainerState(c.ctx, StateDown); err != nil {
+				log.Warnf("failed to mark container %s as down: %v", c.id, err)
+			}
+		}
+		return StateDown
+	}
+
+	return c.state.State
+}
+
+// register client when container is missing and the container is not a infra container
+func (c *Container) ensureClientPresence() (StateString, error) {
+	state := c.checkState()
+	if state != StateDown {
+		return state, nil
+	}
+
+	if c.shouldPresent() && !libmica.ClientNotExist(c.id) {
+		if err := c.registerClient(); err != nil {
+			return StateDown, err
+		}
+	}
+
+	state = c.checkState()
+	if state == StateDown {
+		return StateDown, er.ContainerNotFound
+	}
+
+	return state, nil
+}
+
+func (c *Container) shouldPresent() bool {
+	if c == nil || c.config == nil || c.config.IsInfra {
+		return false
+	}
+	return true
+}
+
+func (c *Container) registerClient() error {
+
+	conf, err := createMicaClientConf(c)
+	if err != nil {
+		return err
+	}
+
+	if err := libmica.Create(conf); err != nil {
+		return err
+	}
+
+	limit := c.config.memoryLimitMB()
+	initialMem := limit
+	if initialMem == 0 {
+		initialMem = c.config.memoryReservationMB()
+	}
+	if initialMem == 0 {
+		initialMem = defs.DefaultMinMemMB
+	}
+	recordThreshold := limit
+	if recordThreshold == 0 {
+		recordThreshold = initialMem
+	}
+	c.me.RecordMemoryState(initialMem, recordThreshold)
+
+	return c.setContainerState(c.ctx, StateReady)
+}
+
+func (c *Container) setupMemory() error {
+	if c == nil || c.config == nil || c.config.IsInfra {
+		return nil
+	}
+
+	if HostPedType != ped.Xen {
+		return nil
+	}
+
+	limit := c.config.memoryLimitMB()
+	if limit == 0 {
+		return nil
+	}
+
+	if c.me.CurrentMaxMem() == limit && c.me.MemoryThresholdMB() >= limit {
+		return nil
+	}
+
+	target := int(limit)
+	log.Debugf("setting mem threshold to %d MB", target)
+	if err := c.me.UpdateMemoryThreshold(limit); err != nil {
+		return fmt.Errorf("failed to set new memory threshold to %d MB for %s: %w", limit, c.id, err)
+	}
+	if err := c.me.UpdateMemory(limit); err != nil {
+		return fmt.Errorf("failed to set memory to %d MB for %s: %w", limit, c.id, err)
+	}
+
+	c.me.RecordMemoryState(limit, limit)
+	return nil
+}
+
+func (c *Container) GetClientCPU() string {
+	if c.cpuUnset() {
+		return ""
+	}
+	return c.config.cpuMask()
+}
+
+// SaveState persists the container's state to disk at two locations for redundancy.
+func (c *Container) SaveState() error {
+	serializable := struct {
+		ID            string          `json:"id"`
+		SandboxID     string          `json:"sandbox_id"`
+		State         ContainerState  `json:"state"`
+		Config        ContainerConfig `json:"config"`
+		Mounts        []Mount         `json:"mounts"`
+		ContainerPath string          `json:"container_path"`
+	}{
+		ID:            c.id,
+		SandboxID:     c.sandboxId,
+		State:         c.state,
+		Config:        *c.config,
+		Mounts:        c.mounts,
+		ContainerPath: c.containerPath,
+	}
+
+	failed, failed1 := false, false
+	var err error
+	var err1 error
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		log.Warnf("Failed to get current working directory: %v", err)
+		cwd = "."
+	}
+	stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicantainerStateFile)
+	stateInMicranDir := filepath.Join(defs.MicranContainerStateDir, c.containerPath, defs.MicantainerStateFile)
+	log.Infof("stateInBundle: %s", stateInBundle)
+
+	bundleDir := filepath.Dir(stateInBundle)
+	if err := utils.EnsureDir(bundleDir, defs.DirMode); err != nil {
+		log.Warnf("Failed to ensure bundle directory: %v.", err)
+	}
+	if err := utils.EnsureDir(filepath.Dir(stateInMicranDir), defs.DirMode); err != nil {
+		log.Warnf("Failed to ensure micran state directory: %v.", err)
+	}
+
+	if err = utils.SaveStructToJSON(stateInBundle, serializable); err != nil {
+		failed = true
+		err = fmt.Errorf("failed to save state to <%s>: %w", stateInBundle, err)
+	}
+
+	if err1 = utils.SaveStructToJSON(stateInMicranDir, serializable); err1 != nil {
+		failed1 = true
+		err1 = fmt.Errorf("failed to save state to <%s>: %w", stateInMicranDir, err1)
+	}
+
+	if failed1 && failed {
+		return fmt.Errorf("failed to save container state to both locations: %w, %w", err, err1)
+	}
+	return nil
+}
+
+// RestoreState loads the container's state from disk, trying the primary and fallback locations.
+func (c *Container) RestoreState() error {
+	type ContainerStorage struct {
+		ID            string          `json:"id"`
+		SandboxID     string          `json:"sandbox_id"`
+		State         ContainerState  `json:"state"`
+		Config        ContainerConfig `json:"config"`
+		Mounts        []Mount         `json:"mounts"`
+		ContainerPath string          `json:"container_path"`
+	}
+
+	var storage ContainerStorage
+
+	stateInMicranDir := filepath.Join(defs.MicranContainerStateDir, c.id, defs.MicantainerStateFile)
+	raw, err := utils.RestoreStructFromJSON(stateInMicranDir)
+
+	if err != nil {
+		cwd, err := os.Getwd()
+		if err != nil {
+			log.Warnf("Failed to get current working directory: %v", err)
+			cwd = "."
+		}
+		stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicantainerStateFile)
+		raw, err = utils.RestoreStructFromJSON(stateInBundle)
+		if err != nil {
+			return fmt.Errorf("failed to restore container state from both locations: %w", err)
+		}
+	}
+
+	jsonBytes, err := json.Marshal(raw)
+	if err != nil {
+		return fmt.Errorf("failed to marshal raw data: %w", err)
+	}
+
+	if err := json.Unmarshal(jsonBytes, &storage); err != nil {
+		return fmt.Errorf("failed to unmarshal container storage: %w", err)
+	}
+
+	c.state = storage.State
+	c.mounts = storage.Mounts
+	c.containerPath = storage.ContainerPath
+	c.updateExitNotifier(c.state.State)
+
+	return nil
+}
+
+// stats returns the container statistics.
+// For Xen-based guests, we derive CPU usage from xl vcpu-list time(s) and memory from libmica.
+func (c *Container) stats() (*ContainerStats, error) {
+	if c.sandbox == nil {
+		return nil, fmt.Errorf("container sandbox reference is nil")
+	}
+	if c.sandbox.state.State != StateRunning {
+		return nil, fmt.Errorf("sandbox is not running, cannot stats container")
+	}
+
+	// CPU: sum per-vCPU consumed time(s) -> microseconds
+	var totalUsec uint64
+	if vcpuInfo, err := ped.XlVcpuList(); err == nil && vcpuInfo != nil {
+		var entries []ped.VCPUEntry
+
+		if v, ok := vcpuInfo.DomainVCPUMap[c.id]; ok {
+			entries = v
+		}
+		for _, e := range entries {
+			if e.TimeSeconds > 0 {
+				totalUsec += uint64(e.TimeSeconds * 1_000_000.0)
+			}
+		}
+	}
+
+	curMB := c.me.CurrentMaxMem()
+	thrMB := c.me.MemoryThresholdMB()
+	if thrMB == 0 {
+		thrMB = c.config.memoryLimitMB()
+	}
+	usageBytes := uint64(curMB) << 20
+	limitBytes := uint64(thrMB) << 20
+
+	st := &ContainerStats{
+		ResourceStats: &ResourceStats{
+			CPUStats: CPUStats{
+				TotalUsage: totalUsec,
+				NrPeriods:  0, // no cgroup-like period semantics in Xen; leave zero.
+			},
+			MemoryStats: MemoryStats{
+				Cache: 0,
+				Usage: MemoryEntry{
+					Failcnt: 0,
+					Limit:   limitBytes,
+					MaxEver: limitBytes, // Conservative default until HWM tracking exists.
+					Usage:   usageBytes,
+				},
+				Stats: map[string]uint64{}, // Reserved for future detailed stats.
+			},
+		},
+		NetworkStats: nil,
+	}
+	return st, nil
+}
+
+// setVcpuAffinity sets the VCPU affinity for the container.
+func (c *Container) setVcpuAffinity(cpuSet cpuset.CPUSet) error {
+	var result *multierror.Error
+	cpulist := cpuSet.ToSlice()
+	if err := c.me.VcpuPin(cpulist); err != nil {
+		result = multierror.Append(result, err)
+	}
+
+	ret := result.ErrorOrNil()
+	if ret == nil {
+		c.config.VCPUNum = uint32(cpuSet.Size())
+		if cpu := c.config.ensureCPU(); cpu != nil {
+			cpu.Cpus = cpuSet.String()
+		}
+		c.config.PCPUNum = int(c.config.VCPUNum)
+	}
+	return ret
+}
+
+// winresize resizes the container's PTY.
+// TODO: Resize the terminal connected to /dev/ttyRPMSG*.
+func (c *Container) winresize(height, width uint32) error {
+	if c.notOperational() {
+		return fmt.Errorf("container not ready or running, impossible to resize the container pty")
+	}
+	log.Debugf("resizing PTY for container %s to [%dx%d]", c.id, width, height)
+	return nil
+}
+
+// firmware is the elf file of rtos
+func (c *Container) getFirmware() string {
+	return c.config.ImageAbsPath
+}
+
+func (c *Container) getPedConf() string {
+	return c.config.PedestalConf
+}
+
+func (c *Container) os() string {
+	return c.config.OS
+}
+
+func (c *Container) cpuUnset() bool {
+	return c.config.cpuMask() == ""
+}
+
+// notOperational checks if the container is not in a state to be operated on.
+func (c *Container) notOperational() bool {
+	currentState := c.checkState()
+	return currentState != StateReady && currentState != StateRunning
 }
