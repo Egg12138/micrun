@@ -25,11 +25,13 @@ type shimContainer struct {
 	exit     uint32
 	terminal bool
 	pid      uint32 // shim pid
+	exitTime time.Time
 	mounted  bool
 	// TODO: we can simulate `exec` by sending commands to mica pty
 	execs map[string]*execTask // extensible in future
 }
 
+// TODO: redundant fields
 type execTask struct {
 	id         string
 	pid        uint32 // shimPid, remove this field is ok

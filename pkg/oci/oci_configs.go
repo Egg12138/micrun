@@ -23,6 +23,8 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
+var hostPed = pedestal.GetHostPed()
+
 type annotationContainerType struct {
 	annotation    string
 	containerType cntr.ContainerType
@@ -89,12 +91,12 @@ func bundleRootfs(bundle string) string {
 // Returns pedestal type, config path, or error if validation fails.
 // This includes checking pedestal type compatibility and resolving Xen image paths.
 func extPedConfig(getAnnotation func(string) (string, bool), baseRootfs, id string) (pedestal.PedType, string, error) {
-	pedtype := cntr.HostPedType
+	pedtype := hostPed
+
 	// if pedType is not specified, use host ped type, skip matching
 	if pedAnnoation, ok := getAnnotation(defs.Pedtype); ok {
 		if pedAnnoation != pedtype.String() {
-			log.Errorf("pedestal type mismatch, host pedestal is %s, while image container %s requires pedestal %s ", pedtype.String(), id, pedAnnoation)
-			return pedtype, "", fmt.Errorf("hypervisor type mismatched: %s ~ %s", pedtype.String(), pedAnnoation)
+			return pedtype, "", fmt.Errorf("hypervisor type mismatched: expect %s but found %s", pedtype.String(), pedAnnoation)
 		}
 	}
 
@@ -106,7 +108,7 @@ func extPedConfig(getAnnotation func(string) (string, bool), baseRootfs, id stri
 
 	if pedtype == pedestal.Xen {
 		// Resolve Xen pedestal image path with annotation > default fallback
-		pedconf = inBundlePath(baseRootfs, pedconf, defs.DefaultXenBin)
+		pedconf = inBundlePath(baseRootfs, pedconf, defs.DefaultXenImg)
 		log.Debugf("Resolved Xen pedestal config path: %s", pedconf)
 	}
 
@@ -353,11 +355,11 @@ func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID 
 	// TODO: allocated shared resources
 
 	networkConfig := cntr.NetworkConfig{}
-	ped := cntr.HostPedType
-	if ped == pedestal.Xen {
-		pedcfg := filepath.Join(bundleRootfs(bundle), defs.DefaultXenBin)
-		log.Debugf("pedestal config for xen is the location of <%s>: %s", defs.DefaultXenBin, pedcfg)
-	}
+	// ped := cntr.HostPedType
+	// if ped == pedestal.Xen {
+	// 	pedcfg := filepath.Join(bundleRootfs(bundle), defs.DefaultXenImg)
+	// 	log.Debugf("pedestal config for xen is the location of <%s>: %s", defs.DefaultXenImg, pedcfg)
+	// }
 
 	staticResMngt := rc.StaticResourceManagement
 	hugePage := pedestal.HugePageSupport(staticResMngt)
@@ -388,7 +390,7 @@ func SandboxConfig(ocispec *specs.Spec, rc RuntimeConfig, bundle, sbContainerID 
 		StaticResourceMgmt: staticResMngt,
 		HugePageSupport:    hugePage,
 		EnableVCPUsPinning: false,
-		SharedCPUPool:      false,
+		SharedCPUPool:      rc.SharedCPUPool,
 		InfraOnly:          containerConfig.IsInfra,
 	}
 
@@ -563,14 +565,6 @@ func applySandboxAnnotations(ocispec specs.Spec, cfg *cntr.SandboxConfig) {
 		case defs.RuntimePrefix + "enable_vcpus_pinning":
 			if b, err := strconv.ParseBool(value); err == nil {
 				cfg.EnableVCPUsPinning = b
-			} else {
-				log.Debugf("invalid bool for %s: %s", key, value)
-			}
-			cfg.Annotations[key] = value
-
-		case defs.RuntimePrefix + "shared_cpu_pool":
-			if b, err := strconv.ParseBool(value); err == nil {
-				cfg.SharedCPUPool = b
 			} else {
 				log.Debugf("invalid bool for %s: %s", key, value)
 			}

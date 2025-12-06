@@ -6,6 +6,7 @@ import (
 	"fmt"
 	er "micrun/errors"
 	log "micrun/logger"
+	"micrun/pkg/cpuset"
 	"micrun/pkg/libmica"
 	"micrun/pkg/pedestal"
 	"micrun/pkg/utils"
@@ -39,7 +40,7 @@ func startClient(ctx context.Context, sandbox SandboxTraits, c *Container) error
 func createMicaClientConf(container *Container) (libmica.MicaClientConf, error) {
 	config := container.config
 	pedType := HostPedType
-	cpus := container.GetClientCPUs()
+	cpus := container.GetClientCPU()
 	conf := libmica.MicaClientConf{}
 	cpuCap := int(config.cpuCapacity())
 	// Pre-calculate effective values for clarity.
@@ -70,6 +71,138 @@ func createMicaClientConf(container *Container) (libmica.MicaClientConf, error) 
 		PedCfg:          config.PedestalConf,
 	})
 	return conf, nil
+}
+
+// pCPU = physical CPU 实际的CPU （核数）, 未来需要考虑更复杂的异构场景，但这里先不考虑，只要确保话别说死就行
+// - 如果有一个容器设置了cpuset(AFFINITY)，对于该容器而言，调度器不会再允许它运行在cpuset之外的pcpu上了
+// - 如果一个sandbox中有多个容器都设置了cpuset，我们可以考虑它们的cpuset并集为一个 cpu pool, (shared_cpu_pool option)
+//
+// 如果启用了 shared_cpu_pool:
+// sandbox 内的 所有容器都只能运行在这个 cpu pool 的pcpu上。
+// 目前这是一个仅在 MicRan 中保留的概念，未来**或许**我们会完成对pedestal
+// cpu pool 的实际操控, 那么sandbox 为容器workload 申请的 vcpu number = Size(cpuSetUnion)
+// 并且这个 sandbox 管理 cpupool 的点子未必合适，因为机器上可能有多个sandbox, sandbox 管理的 cpuppol 的范围有可能重合，比如
+// sandbox1: (0,1,2,) sandbox2: (1,2,3) 这种情况
+//
+// 看代码的人，你可能会有疑问：为什么要考虑VCPU的数量呢？hypervisor的affinity明明只是限定 pcpu set到若干vcpu上，从性能上看vcpu肯定是越小越好的
+// 是因为这或许可以 **反映出** RTOS 内部能看到的 VCPU 的数量和实际分给它的 PCPU 数量的对应关系，这是一个**面向PPT**的设计(vcpu_pcpu_binding option)
+// 最好的做法应该是默认VCPU = 1，必须要在 runtime config 或者 annotation 中打开某个开关（还没加) 才启用 VCPU = Size(cpuSetUnion) 也就是 Num of pCPUs
+// 那么VCPU和PCPU数量的对应关系是这样的：
+// 1. 启用了某种 面向PPT(vcpu_pcpu_binding) 设计： VCPUs :PCPUs = 1:1
+// 2. 通常情况下
+// > for sandbox: VCPUs : PCPUs = 1:N, N = Size(cpuSetUnion) or = Sum(cpuCapacity),
+// > for container: VCPUs : PCPUs = 1:M, M = Size(cpuSet) or = cpuCapacity
+//
+// 在算力上，应该设置capcapacity为=0,使pedestal(hypervisor)不限制cpu用量
+// calculateSandboxVCPUs returns the total VCPU count for the sandbox.
+// Without a resource pool, this is a statistic that should reflect the sum
+// of each container's configured vCPUs in the sandbox.
+func calculateSandboxVCPUs(s *Sandbox) (uint32, error) {
+	if s == nil || s.config == nil {
+		return 0, fmt.Errorf("sandbox or sandbox config is nil")
+	}
+
+	total := uint32(0)
+	for _, cc := range s.config.ContainerConfigs {
+		if cc.IsInfra {
+			continue
+		}
+		if c, ok := s.containers[cc.ID]; ok {
+			state := c.checkState()
+			if state == StateStopped || state == StateDown {
+				log.Debugf("skipped inactive container %s (state=%s)", c.ID(), state)
+				continue
+			}
+		}
+
+		if cc.VCPUNum > 0 {
+			total += cc.VCPUNum
+			continue
+		}
+
+		if cc.Resources != nil && cc.Resources.CPU != nil {
+			cpu := cc.Resources.CPU
+			if cpu.Period != nil && cpu.Quota != nil && *cpu.Period != 0 {
+				m := utils.CalculateMilliCPUs(*cpu.Quota, *cpu.Period)
+				v := utils.CalculateVCpusFromMilliCpus(m)
+				if v > 0 {
+					total += v
+					continue
+				}
+			}
+			if cpu.Cpus != "" {
+				set, err := cpuset.Parse(cpu.Cpus)
+				if err == nil {
+					total += uint32(set.Size())
+					continue
+				}
+			}
+		}
+
+		// Last resort: count 1.
+		total += 1
+	}
+
+	return total, nil
+}
+
+func calculateSandboxMemory(s *Sandbox) uint64 {
+	// Return value is in MiB
+	memorySandbox := uint64(0)
+	for _, cc := range s.config.ContainerConfigs {
+		if cc.IsInfra {
+			continue
+		}
+		if c, ok := s.containers[cc.ID]; ok {
+			state := c.checkState()
+			if state == StateStopped || state == StateDown {
+				log.Debugf("skipped inactive container %s (state=%s)", c.ID(), state)
+				continue
+			}
+		}
+
+		if cc.Resources == nil {
+			continue
+		}
+
+		if m := cc.Resources.Memory; m != nil {
+			// OCI memory limit is in bytes; convert to MiB for sandbox accounting
+			if m.Limit != nil && *m.Limit > 0 {
+				limitMiB := uint64(*m.Limit >> 20)
+				memorySandbox += limitMiB
+				log.Debugf("sandbox memory limit + %d MiB", limitMiB)
+			}
+
+			// Hugepage limits are also in bytes; convert to MiB
+			if s.config.HugePageSupport {
+				for _, lim := range cc.Resources.HugepageLimits {
+					hpMiB := lim.Limit >> 20
+					log.Debugf("sandbox hugepage limit + %d MiB (%s)", hpMiB, lim.Pagesize)
+					memorySandbox += hpMiB
+				}
+			}
+		}
+	}
+	return memorySandbox
+}
+
+func CpusetRangeValid(sortedCpuList []int) (bool, []int) {
+	maxCpus := pedestal.HostCPUCounts().Physical
+	outrange := []int{}
+
+	for _, cpu := range sortedCpuList {
+		// cpuid start from 0
+		if cpu >= int(maxCpus) {
+			outrange = append(outrange, cpu)
+		}
+	}
+
+	if len(outrange) > 0 {
+		log.Warnf("cpuset range is out of machine max cpu: %v", outrange)
+		return false, outrange
+	}
+
+	return true, outrange
 }
 
 // Update resource for changed resource
@@ -221,4 +354,28 @@ func extractENo(err error) int {
 		return exitErr.ExitCode()
 	}
 	return 255
+}
+
+func copyInt64(src *int64) *int64 {
+	if src == nil {
+		return nil
+	}
+	val := *src
+	return &val
+}
+
+func copyUint64(src *uint64) *uint64 {
+	if src == nil {
+		return nil
+	}
+	val := *src
+	return &val
+}
+
+func copyBool(src *bool) *bool {
+	if src == nil {
+		return nil
+	}
+	val := *src
+	return &val
 }

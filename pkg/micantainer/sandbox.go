@@ -214,9 +214,6 @@ func (s *Sandbox) Delete(ctx context.Context) error {
 		}
 	}
 
-	if s.monitor != nil {
-		s.monitor.stop()
-	}
 	return s.cleanSandboxStorage()
 
 }
@@ -717,7 +714,7 @@ func newSandbox(ctx context.Context, config SandboxConfig) (sb *Sandbox, retErr 
 		s.network = &DummyNetwork{}
 	}
 
-	if err := s.Restore(); err != nil {
+	if err := s.restore(); err != nil {
 		log.Debugf("failed to restore sandbox %s: %v", s.id, err)
 	}
 	return s, nil

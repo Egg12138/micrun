@@ -16,6 +16,7 @@ type SandboxConfig struct {
 	Annotations        map[string]string
 	SharedMemorySize   uint64
 	EnableVCPUsPinning bool
+	SharedCPUPool      bool
 	StaticResourceMgmt bool
 	HugePageSupport    bool
 	InfraOnly          bool

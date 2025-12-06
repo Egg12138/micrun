@@ -19,6 +19,7 @@ import (
 	eventstypes "github.com/containerd/containerd/api/events"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
+	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/namespaces"
 	ptypes "github.com/containerd/containerd/protobuf/types"
 	shimv2 "github.com/containerd/containerd/runtime/v2/shim"
@@ -331,7 +332,27 @@ var emptyResponse = &ptypes.Empty{}
 
 func (s *shimService) State(ctx context.Context, r *taskAPI.StateRequest) (*taskAPI.StateResponse, error) {
 
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		return nil, fmt.Errorf("container %s not found", r.ID)
+	}
+
+	return &taskAPI.StateResponse{
+		ID:         c.id,
+		Bundle:     c.bundle,
+		Pid:        shimPid,
+		Status:     c.status,
+		Stdin:      c.stdin,
+		Stdout:     c.stdout,
+		Stderr:     c.stderr,
+		Terminal:   c.terminal,
+		ExitStatus: c.exit,
+		ExitedAt:   timestamppb.New(c.exitTime),
+		ExecID:     r.ExecID,
+	}, nil
 }
 
 // does not send request to micad, create container in memory
@@ -379,9 +400,79 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 		Pid: pid,
 	}, nil
 }
-func (s *shimService) Start(context.Context, *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
+func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 
-	return nil, nil
+	log.Debugf("starting container %s", r.ID)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		log.Debugf("container %s not found in shim service storage", r.ID)
+		return nil, er.ContainerNotFound
+	}
+
+	s.eventSendMu.Lock()
+	defer s.eventSendMu.Unlock()
+
+	respPid := shimPid
+	// wannna start a exec process in a container
+	if r.ExecID != "" {
+		execProc, exists := c.execs[r.ExecID]
+		if !exists {
+			return nil, errdefs.ToGRPCf(errdefs.ErrNotFound, "exec %s not found in container %s", r.ExecID, r.ID)
+		}
+		if c.status != task.Status_RUNNING {
+			return nil, errdefs.ToGRPCf(errdefs.ErrFailedPrecondition, "container %s must be running to start exec %s", r.ID, r.ExecID)
+		}
+
+		// Bridge exec stdio to the container PTY
+		key := r.ID + "|" + r.ExecID
+		if s.sandbox == nil {
+			log.Debugf("Sandbox is nil, cannot get IOStream for exec %s/%s", r.ID, r.ExecID)
+		} else {
+			stdin, stdout, _, err := s.sandbox.IOStream(c.id, c.id)
+			if err != nil {
+				log.Debugf("exec io: IOStream failed for %s/%s: %v", r.ID, r.ExecID, err)
+			} else {
+				tty, err := newTtyIO(ctx, c.id, spec.stdin, spec.stdout, spec.stderr, spec.terminal)
+				if err != nil {
+					log.Debugf("exec io: newTtyIO failed for %s/%s: %v", r.ID, r.ExecID, err)
+				} else {
+					stdinCloser := make(chan struct{})
+					go ioCopy(c.exitIOch, stdinCloser, tty, stdin, stdout)
+					execStatesMu.Lock()
+					execStates[key] = execIOState{tty: tty, stdinCloser: stdinCloser}
+					execStatesMu.Unlock()
+				}
+			}
+		}
+
+		execProc.markStarted(shimPid)
+		s.send(&events.TaskExecStarted{
+			ContainerID: c.id,
+			ExecID:      r.ExecID,
+			Pid:         shimPid,
+		})
+	} else {
+		log.Infof("starting container %s", c.id)
+		err := startContainer(ctx, s, c)
+		if err != nil {
+			return nil, errdefs.ToGRPC(err)
+		}
+		pid := c.pid
+		if pid == 0 {
+			pid = shimPid
+		}
+		s.send(&events.TaskStart{
+			ContainerID: c.id,
+			Pid:         pid,
+		})
+		respPid = pid
+	}
+
+	return &taskAPI.StartResponse{
+		Pid: respPid,
+	}, nil
 }
 func (s *shimService) Delete(context.Context, *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 

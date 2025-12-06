@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -86,7 +87,7 @@ func selectSampler(cfg sdktrace.Sampler) sdktrace.Sampler {
 	return cfg
 }
 
-func buildExporter(ctx context.Context, cfg Config) (*otlptracegrpc.Exporter, error) {
+func buildExporter(ctx context.Context, cfg Config) (*otlptrace.Exporter, error) {
 	opts := []otlptracegrpc.Option{}
 	if cfg.Endpoint != "" {
 		opts = append(opts, otlptracegrpc.WithEndpoint(cfg.Endpoint))

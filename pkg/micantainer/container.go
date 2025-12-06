@@ -194,7 +194,7 @@ func (c *Container) start(ctx context.Context) error {
 		if currentState != StateReady && currentState != StateStopped {
 			return fmt.Errorf("container is not ready or stopped, cannot start")
 		}
-		if err := c.state.ValidTransition(currentState, StateRunning); err != nil {
+		if err := c.state.Transition(currentState, StateRunning); err != nil {
 			return err
 		}
 		return c.setContainerState(ctx, StateRunning)
@@ -462,7 +462,7 @@ func (c *Container) doStop(force bool) error {
 		return nil
 	}
 
-	if err := c.state.ValidTransition(currentState, StateStopped); err != nil && !force {
+	if err := c.state.Transition(currentState, StateStopped); err != nil && !force {
 		return err
 	}
 
@@ -825,10 +825,10 @@ func (c *Container) validMicaContainer() bool {
 		return true
 	}
 
-	osValid := validOS(c.GetOS())
-	fwValid := validFirmware(c.GetFirmwarePath())
+	osValid := validOS(c.os())
+	fwValid := validFirmware(c.getFirmware())
 	if HostPedType == ped.Xen {
-		binFile := validBinfile(c.GetPedestalConf())
+		binFile := validBinfile(c.getPedConf())
 		fwValid = binFile && fwValid
 	}
 	judge := osValid && fwValid
@@ -1003,7 +1003,7 @@ func (c *Container) SaveState() error {
 		cwd = "."
 	}
 	stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicantainerStateFile)
-	stateInMicranDir := filepath.Join(defs.MicranContainerStateDir, c.containerPath, defs.MicantainerStateFile)
+	stateInMicranDir := filepath.Join(defs.MicrunContainerStateDir, c.containerPath, defs.MicantainerStateFile)
 	log.Infof("stateInBundle: %s", stateInBundle)
 
 	bundleDir := filepath.Dir(stateInBundle)
@@ -1043,7 +1043,7 @@ func (c *Container) RestoreState() error {
 
 	var storage ContainerStorage
 
-	stateInMicranDir := filepath.Join(defs.MicranContainerStateDir, c.id, defs.MicantainerStateFile)
+	stateInMicranDir := filepath.Join(defs.MicrunContainerStateDir, c.id, defs.MicantainerStateFile)
 	raw, err := utils.RestoreStructFromJSON(stateInMicranDir)
 
 	if err != nil {

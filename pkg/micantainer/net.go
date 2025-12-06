@@ -36,3 +36,8 @@ func (n *NetworkConfig) NetID() string {
 	}
 	return n.NetworkID
 }
+
+// TODO: post hook can do a lot.
+func (n *NetworkConfig) postCreated() error {
+	return nil
+}

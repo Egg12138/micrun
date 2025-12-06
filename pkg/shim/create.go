@@ -140,11 +140,6 @@ func createSandboxContainer(ctx context.Context, s *shimService, containerType c
 	}
 
 	s.config = runtimeConfig
-	if containerType == cntr.PodSandbox {
-		s.config.SandboxCPUs, s.config.SandboxMemMB = oci.CalculateSandboxSizing(ociSpec)
-	} else {
-		s.config.SandboxCPUs, s.config.SandboxMemMB = oci.CalculateContainerSizing(ociSpec)
-	}
 
 	if containerType != cntr.PodSandbox {
 		log.Debug("rootfs mounted for single container, showing rootfs contents:")
