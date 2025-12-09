@@ -2,6 +2,10 @@
 
 ## 资源映射规范
 
+[总结映射规则](resource-mapping.md)
+
+本文部分地方用 Q&A 的方式展开, 从新手开发者的角度展开了整体设计的考量
+
 ### 1. CPU 资源配置解析与映射
 
 MicRun 从 `linux.resources.cpu` 部分解析以下 CPU 资源配置：
@@ -37,7 +41,7 @@ Container memory reservation < memory limit <====> RTOS Client memory min
 
 **重要规范：**
 - **Container 语境**：使用 container memory limit, minimal memory
-- **libmica 语境**：使用 RTOS Client memory resource
+- **libmica 语境**：使用 RTOS Client memory resource (旧代码，新代码有变动)
 - `container.me.records` 记录了 libmica 语境下的资源量
 - `container.me.memoryThreshold` 设计为单调递增的，因此它仅在新的 memory threshold 出现时才会正更新
 - `pedestal.EssentialResource` 中并不记录 memoryThreshold，`memorymaxmb` 就是 OCI spec `mem.Limit`，`mem min` 就是 OCI spec `mem.Reservation`
@@ -53,13 +57,10 @@ Container memory reservation < memory limit <====> RTOS Client memory min
 MicRun 将 Linux cgroup 资源配额转换为 Xen 虚拟化环境的资源分配：
 
 **CPU 资源映射：**
-- **quota/period** → **vCPU 数量 + cap 百分比**：通过 `quota/period` 计算所需 CPU 核心数，向上取整分配 vCPU，计算每个 vCPU 的 cap 百分比
+- **quota/period** → **vCPU 数量(if vpu_pcpu_binding)**,  **cap 百分比**：通过 `quota/period` 计算所需 CPU 核心数，向上取整分配 vCPU，计算每个 vCPU 的 cap 百分比
 - **cpu.shares** → **CPUWeight**：将 cgroup 的 shares (2-262144) 映射到 Xen 的 weight (1-65535)，默认比例 R=4
 - **cpuset.cpus** → **CPUAffinity**：直接传递 CPU 亲和性设置
 
-**内存资源映射：**
-- **memory_limit_in_bytes** → **静态内存分配**：转换为 MB 单位，作为 Xen domain 的静态内存分配
-- **memory_swap_limit_in_bytes** → **忽略**：Xen 环境下不支持 swap
 
 **核心约束规则：**
 ```
@@ -82,9 +83,11 @@ effective_capacity = min(
 - 只有 quota/period：容量 = (quota × 100) / period
 
 **权重转换：**
-```
-W(S) = max(1, min(⌊S/R⌋, 65535)); R=4
-```
+
+$$
+W(S) = \max{1, \min{\frac{S}{R}, 65535}}; R=4
+$$
+
 其中 S 为 cgroup cpu.shares 值 (2-262144)
 
 ### 3. Kubernetes 资源要点
@@ -107,9 +110,14 @@ W(S) = max(1, min(⌊S/R⌋, 65535)); R=4
 
 ## 1. cgroup 资源语义
 
+我们保持对 oci spec 的语义一致性，而 runc 遵循 oci规范，因此让我们考察 runc 的 oci spec 资源语义
+
+
 ### 1.1 Runc 的默认行为与 VCPU 数量
 
-**结论：Runc 本身不"思考" VCPU 的数量，它只是 Cgroups 的执行者。**
+
+VCPU number 是一个 POC (Presentaion Oriented Concept) 面向展示的一般不会有用的设计，主要是为了在RTOS内部显示确实更新资源信息。
+因此，在 Linux Cgroup 语义中，是没有这个概念的:
 
 - **默认行为（无限制）：** 如果 OCI Spec 中没有指定 CPU 限制，`runc` 不会去探测 VCPU 数量来人为设定限制。此时，容器内的进程可以使用宿主机（或 VM）上**所有**可用的 CPU 核心。
 - **VCPU 的角色：** 对于 `runc` 而言，它看到的是 Linux 内核呈现的"逻辑核心"。无论是在物理机上还是在虚拟机（VM）里，内核识别到的核心数就是 `runc` 能调用的上限。
@@ -117,15 +125,11 @@ W(S) = max(1, min(⌊S/R⌋, 65535)); R=4
 
 ### 1.2 Runc 对 Cpuset (Pinning) 和 Quota/Period 的处理
 
-`runc` 完全依赖 Linux Cgroups (v1 或 v2) 来实现资源隔离。
-
 #### A. Cpuset (Pinning)
-- **是否生效：** 是的。
 - **机制：** 当 OCI Spec 中指定了 `linux.resources.cpu.cpus` 时，`runc` 会将其写入 Cgroup 的 `cpuset.cpus` 文件。
 - **效果：** 这是一个**硬亲和性（Hard Affinity）**设置。容器内的进程**只能**被调度器安排在指定的这些核心上运行，绝对不会漂移到其他核心。
 
 #### B. Quota/Period (算力时间)
-- **是否生效：** 是的。
 - **机制：** `runc` 会读取 OCI Spec 中的 `quota` 和 `period`，并写入 Cgroup：
     - **Cgroup v1:** 写入 `cpu.cfs_quota_us` 和 `cpu.cfs_period_us`
     - **Cgroup v2:** 写入 `cpu.max` (格式为 `quota period`)
@@ -133,18 +137,17 @@ W(S) = max(1, min(⌊S/R⌋, 65535)); R=4
 
 ### 1.3 OCI Spec 中的字段与共存关系
 
-#### Q: `cpulimit` 和 `cpu quota`, `period` 会同时在 oci.spec 中被指定吗？
+#### Q: k8s 侧有 `cpulimit`, oci spec 中有 `cpu quota`, `period` 它们是否会冲突？
 
-**准确回答：不会，因为 OCI Spec 中根本没有 `cpulimit` 这个字段。**
+**不会，因为 Kubernetes 在源码中就将 cpulimit 转换为 cpu quota, perid**
 
-这里有一个常见的概念混淆：
 - **Kubernetes 层：** 用户定义 `resources.limits.cpu` (俗称 CPU Limit)
 - **转换层 (Kubelet/Containerd)：** K8s 会根据 Limit 值计算出 `quota`。通常 `period` 默认为 100ms (100000us)
     - 例如：Limit = 0.5 core → Quota = 50000, Period = 100000
 - **OCI Spec 层 (Runc 看到的)：** `config.json` 文件中只有标准的 Linux Cgroup 参数字段：
     - `linux.resources.cpu.quota`
     - `linux.resources.cpu.period`
-    - `linux.resources.cpu.shares` (对应 K8s 的 requests)
+    - `linux.resources.cpu.shares` 
     - `linux.resources.cpu.cpus` (对应 cpuset)
 
 **Runc 的对待方式：**
@@ -165,7 +168,7 @@ Runc 只认 OCI 标准字段。它看到 `quota` 和 `period` 就会去设置 CF
 理论最大算力 (Cores) = min(quota/period, Host Total Cores)
 ```
 
-### 1.5 核心问题：Cpuset 会影响实际的算力占用时间吗？
+### 1.5 核心问题：Cpuset 会影响实际的算力占用时间, 还是仅仅是设置了容器可运行的核区间？
 
 **答案：非常会，而且是决定性的物理天花板。**
 
@@ -226,11 +229,12 @@ ctr run \
 - cpu_weight: 1 - 65535, default=256
 
 转换公式：
-```
-W(S) = max(1, min(⌊S/R⌋, 65535)); R=4
-```
 
-### 2.4 热更新
+$$
+W(S) = \max{1, \min{\frac{S}{R}, 65535}}; R=4
+$$
+
+### 2.4 热更新 (动态扩缩)
 
 通过 CRI 和 containerd 通信时（k8s集群等），容器资源可以热更新。
 
@@ -256,7 +260,7 @@ spec:
         cpu: "500m"
         memory: "512Mi"
       limits:
-        cpu: "1000m"     # 可通过 kubectl patch 热更新
+        cpu: "1000m"     # 可通过 kubectl patch 热更新, **但是这对K8s版本有要求**
         memory: "1Gi"    # 可通过 kubectl patch 热更新
 ```
 
@@ -359,19 +363,19 @@ message LinuxContainerResources {
 }
 ```
 
-## 5. Containerd Cgroup 资源配额转换为 Pedestal 资源抽象
+## 5. Containerd Cgroup 资源配额转换为 Pedestal(Hypervisor) 资源抽象
 
 ### 5.1 资源过滤策略
 
 **目前不支持的：**
 - BlockIO
-- HugepageLimits  
 - Devices
+- Unified cgroup v2 metrics mapping
 
 **不会支持的：**
 - Pids
 - Rdma
-- Unified cgroup v2
+- HugepageLimits  
 
 **仅保留资源：**
 仅保留 `CPU`、`Memory`，并且我们仅关注：
@@ -434,6 +438,10 @@ type LinuxMemory struct {
 ## 6. 不同 Pedestal 的配额映射策略
 
 ### 6.1 Baremetal
+
+由于实现的抽象不太好，你看到的这个版本已经去掉了 `baremetal.go`
+> baremetal 拿来容器化的唯一价值就是从镜像仓直接拉取容器来运行
+
 - CPU 核心直接分配
 - 内存通过 cgroup 限制
 
@@ -460,12 +468,6 @@ type LinuxMemory struct {
 | `oom_score_adj` | 0 | **部分忽略** (RTOS无OOM概念) | **忽略** (RTOS无OOM概念) | 忽略 |
 | `hugepage_limits` | nil | **暂时忽略** (未来可扩展) | **暂时忽略** | 忽略 |
 | `unified` (cgroup v2) | nil | **完全忽略** (不适用) | **完全忽略** (不适用) | 忽略 |
-
-## 8. 具体实现策略
-
-1. **多 shim 资源管理**：维护全局管理器到共享内存中，跟踪已分配的 CPU 和内存
-2. **OOM 处理**：RTOS 环境无 OOM killer，记录警告日志
-3. **资源回收机制**：标记回收，实际回收交给 Xen，需要解决一致性隐患
 
 ## 9. LinuxContainerResources 到 Micran 资源映射完整对照表
 
@@ -633,6 +635,8 @@ func convertMemoryResourcesXen(res *LinuxContainerResources, availableMemoryMB i
 
 #### B. Baremetal Pedestal
 
+仅供参考，如果未来计划实现 baremetal 的完整容器化的话，
+
 ```go
 type BaremetalMemoryMapping struct {
     MemoryLimitBytes int64  // 内存限制 (字节)
@@ -658,57 +662,6 @@ func convertMemoryResourcesBaremetal(res *LinuxContainerResources) BaremetalMemo
 ```
 
 ## 10. 资源管理器实现
-
-### 10.1 系统资源感知
-
-```go
-type PedestalResourceManager interface {
-    GetAvailableResources() (cpus int, memoryMB int64)
-    AllocateResources(cpus int, memoryMB int64) error
-    ReleaseResources(cpus int, memoryMB int64) error
-    GetResourceUsage() ResourceUsage
-}
-
-type XenResourceManager struct {
-    dom0CPUs        int   // Dom0保留的CPU数
-    dom0Memory      int64 // Dom0保留的内存(MB)
-    totalCPUs       int   // 物理机总CPU数
-    totalMemory     int64 // 物理机总内存(MB)
-    
-    mutex           sync.RWMutex
-    allocatedCPUs   int   // 已分配的CPU数
-    allocatedMemory int64 // 已分配的内存(MB)
-}
-
-func (xrm *XenResourceManager) GetAvailableResources() (int, int64) {
-    xrm.mutex.RLock()
-    defer xrm.mutex.RUnlock()
-    
-    availCPUs := (xrm.totalCPUs - xrm.dom0CPUs) - xrm.allocatedCPUs
-    availMemory := (xrm.totalMemory - xrm.dom0Memory) - xrm.allocatedMemory
-    
-    if availCPUs < 0 {
-        availCPUs = 0
-    }
-    if availMemory < 0 {
-        availMemory = 0
-    }
-    
-    return availCPUs, availMemory
-}
-```
-
-### 10.2 并发安全保证
-
-```go
-// 共享内存资源计数器 (用于多shim实例)
-type SharedResourceCounter struct {
-    shmPath     string
-    mutex       *sync.Mutex  // 跨进程互斥锁
-    allocatedCPUs   *int64   // 共享内存中的CPU计数
-    allocatedMemory *int64   // 共享内存中的内存计数
-}
-```
 
 ## 11. Micran 资源映射实现细节
 
@@ -915,30 +868,13 @@ spec:
 - **容量计算**：quota=200% (2.0核)，cpuset_size=3核 → effective_capacity=200%
 - **Xen**：分配2个vCPU，每个cap=100%
 
-### 12.4 性能测试场景
-
-#### 场景A：实时性测试
-- **目标**：验证 RTOS 在 Xen 环境下的实时性能
-- **方法**：运行周期性任务，测量任务抖动和延迟
-- **指标**：最大延迟、平均延迟、延迟标准差
-
-#### 场景B：资源隔离测试
-- **目标**：验证多个 RTOS 客户机之间的资源隔离
-- **方法**：同时运行多个高负载 RTOS 客户机
-- **指标**：CPU 使用率、内存使用率、相互干扰程度
-
-#### 场景C：热更新测试
-- **目标**：验证资源热更新的可行性
-- **方法**：运行中调整容器 CPU/内存限制
-- **指标**：更新成功率、服务中断时间、资源重新分配时间
-
 ### 12.5 调试与监控
 
 #### 监控指标
 1. **Xen 层面**：
    - `xl list`：查看 domain 状态和资源使用
-   - `xl debug-keys`：获取调试信息
-   - `xentop`：实时监控 Xen 资源使用
+   - `xl schecd-credit2`
+   - `xentop`：实时监控 Xen 资源使用, 目前 oee 没有
 
 2. **MicRun 层面**：
    - `/tmp/micrun/runtime.log`：运行时日志
@@ -948,47 +884,5 @@ spec:
 3. **容器层面**：
    - `ctr containers list`：容器状态
    - `ctr tasks list`：任务状态
+   - `ctr tasks metrics`
    - `journalctl -xeu containerd`：containerd 日志
-
-#### 调试命令
-```bash
-# 查看 Xen domain 配置
-xl list -l
-
-# 查看 MicRun 资源分配
-cat /proc/micrun/resources
-
-# 监控 containerd 事件
-ctr events
-
-# 测试资源映射
-micrun-test --spec test-spec.json --pedestal xen
-```
-
-### 12.6 已知限制与解决方案
-
-#### 限制1：CPU 核心整数分配
-- **问题**：Baremetal 环境下只能分配整数 CPU 核心
-- **解决方案**：使用实时调度策略和时间片分割模拟小数核心
-
-#### 限制2：内存热更新限制
-- **问题**：Xen 内存分配后难以动态调整
-- **解决方案**：预留额外内存，通过 ballooning 技术调整
-
-#### 限制3：RTOS 资源监控
-- **问题**：RTOS 不提供标准的资源使用统计
-- **解决方案**：通过 Xen 工具间接监控，或 RTOS 侧实现统计接口
-
-#### 限制4：多 shim 协调
-- **问题**：多个 shim 实例需要协调资源分配
-- **解决方案**：共享内存资源计数器 + 分布式锁机制
-
-### 12.7 未来扩展方向
-
-1. **动态资源调度**：基于负载动态调整 RTOS 资源分配
-2. **QoS 保证**：实现不同优先级的服务质量保证
-3. **能源管理**：根据负载动态调整 CPU 频率和功耗
-4. **异构计算**：支持 GPU、FPGA 等异构计算资源
-5. **安全隔离**：增强 RTOS 之间的安全隔离机制
-
-这些实验性示例和测试场景为 MicRun 的资源映射实现提供了验证框架和调试指导。

@@ -146,7 +146,8 @@ if new_threshold > current_threshold {
 annotations:
   io.kubernetes.cri.cpuset-cpus: "0-3"
   io.containerd.micrun.vcpu-pcpu-binding: "true"
-  io.containerd.micrun.shared-cpu-pool: "true"
+  # io.containerd.micrun.shared-cpu-pool: "true" 没有这个选项，因为cpupool是一个全局的方案，
+  # 应该设置 shared_cpu_pool 在 micrun config 中
 ```
 
 ## 5. 实现要点
@@ -181,31 +182,3 @@ func calculateVcpuNum(cpuSet string, enableVcpuPcpuBinding bool) uint32
 - **cpuset**：作为物理天花板，限制容器可用的 CPU 核心数
 - **quota/period**：作为逻辑上限，限制容器可使用的 CPU 时间片
 - **最终限制**：取两者的最小值，确保配置的物理可实现性
-
-## 6. 未来扩展
-
-### 6.1 动态资源调度
-- 基于负载动态调整 RTOS 资源分配
-- 实现资源的热迁移和重新平衡
-
-### 6.2 QoS 保证
-- 实现不同优先级的服务质量保证
-- 支持实时性要求的 RTOS 应用
-
-### 6.3 能源管理
-- 根据负载动态调整 CPU 频率和功耗
-- 实现能效优化的资源分配
-
-### 6.4 异构计算
-- 支持 GPU、FPGA 等异构计算资源
-- 实现统一的资源管理接口
-
-### 6.5 安全隔离
-- 增强 RTOS 之间的安全隔离机制
-- 支持硬件辅助的安全特性
-
----
-
-**版本**：1.0  
-**最后更新**：2024年  
-**维护者**：MicRun 开发团队
