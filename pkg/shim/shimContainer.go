@@ -2,6 +2,7 @@ package shim
 
 import (
 	"io"
+	log "micrun/logger"
 	cntr "micrun/pkg/micantainer"
 	"sync"
 	"time"
@@ -13,20 +14,26 @@ import (
 )
 
 type shimContainer struct {
-	s        *shimService
-	spec     *specs.Spec
-	id       string
-	stdin    string
-	stdout   string
-	stderr   string
-	bundle   string // abs path of the bundle directory
-	cType    cntr.ContainerType
-	status   task.Status
-	exit     uint32
-	terminal bool
-	pid      uint32 // shim pid
-	exitTime time.Time
-	mounted  bool
+	s     *shimService
+	spec  *specs.Spec
+	ttyio *ttyIO
+	id    string
+	// io
+	stdin       string
+	stdout      string
+	stderr      string
+	stdinPipe   io.WriteCloser
+	stdinCloser chan struct{}
+	exitIOch    chan struct{}
+	exitIoOnce  sync.Once
+	bundle      string // abs path of the bundle directory
+	cType       cntr.ContainerType
+	status      task.Status
+	exit        uint32
+	terminal    bool
+	pid         uint32 // shim pid
+	exitTime    time.Time
+	mounted     bool
 	// TODO: we can simulate `exec` by sending commands to mica pty
 	execs map[string]*execTask // extensible in future
 }
@@ -92,20 +99,32 @@ func newContainer(s *shimService, r *taskAPI.CreateTaskRequest, cType cntr.Conta
 	}
 
 	c := &shimContainer{
-		s:        s,
-		spec:     ocispec,
-		id:       r.ID,
-		stdin:    r.Stdin,
-		stdout:   r.Stdout,
-		stderr:   r.Stderr,
-		bundle:   r.Bundle,
-		cType:    cType,
-		status:   task.Status_CREATED,
-		terminal: r.Terminal,
-		mounted:  mounted,
-		pid:      shimPid,
-		execs:    make(map[string]*execTask),
+		s:           s,
+		spec:        ocispec,
+		id:          r.ID,
+		stdin:       r.Stdin,
+		stdout:      r.Stdout,
+		stderr:      r.Stderr,
+		exitIOch:    make(chan struct{}),
+		stdinCloser: make(chan struct{}),
+		bundle:      r.Bundle,
+		cType:       cType,
+		status:      task.Status_CREATED,
+		terminal:    r.Terminal,
+		mounted:     mounted,
+		pid:         shimPid,
+		execs:       make(map[string]*execTask),
 	}
 
 	return c, nil
+}
+
+func (c *shimContainer) ioExit() {
+	log.Debugf("close shim container io channel")
+	if c == nil {
+		return
+	}
+	c.exitIoOnce.Do(func() {
+		close(c.exitIOch)
+	})
 }

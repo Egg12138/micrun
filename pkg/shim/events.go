@@ -107,8 +107,6 @@ func (s *shimService) reportExit(e exitEvent) {
 	if id == "" {
 		id = e.cid
 	}
-	s.eventSendMu.Lock()
-	defer s.eventSendMu.Unlock()
 	s.send(&events.TaskExit{
 		ContainerID: e.cid,
 		ID:          id,

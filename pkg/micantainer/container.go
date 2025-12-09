@@ -524,7 +524,8 @@ func (c *Container) kill() error {
 }
 
 // delete removes the container.
-// This differs from mica, where `rm` forces a client stop. For a container engine, that is bad practice.
+// remove mica client first and update state, then remove container instance from sandbox container list
+// clean cached data finally
 func (c *Container) delete(ctx context.Context) error {
 	if c.sandbox == nil {
 		return fmt.Errorf("container sandbox reference is nil")
@@ -1002,15 +1003,15 @@ func (c *Container) SaveState() error {
 		log.Warnf("Failed to get current working directory: %v", err)
 		cwd = "."
 	}
-	stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicantainerStateFile)
-	stateInMicranDir := filepath.Join(defs.MicrunContainerStateDir, c.containerPath, defs.MicantainerStateFile)
+	stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicrunContainerStateFile)
+	stateInMicrunDir := filepath.Join(defs.MicrunStateDir, c.containerPath, defs.MicrunContainerStateFile)
 	log.Infof("stateInBundle: %s", stateInBundle)
 
 	bundleDir := filepath.Dir(stateInBundle)
 	if err := utils.EnsureDir(bundleDir, defs.DirMode); err != nil {
 		log.Warnf("Failed to ensure bundle directory: %v.", err)
 	}
-	if err := utils.EnsureDir(filepath.Dir(stateInMicranDir), defs.DirMode); err != nil {
+	if err := utils.EnsureDir(filepath.Dir(stateInMicrunDir), defs.DirMode); err != nil {
 		log.Warnf("Failed to ensure micran state directory: %v.", err)
 	}
 
@@ -1019,9 +1020,9 @@ func (c *Container) SaveState() error {
 		err = fmt.Errorf("failed to save state to <%s>: %w", stateInBundle, err)
 	}
 
-	if err1 = utils.SaveStructToJSON(stateInMicranDir, serializable); err1 != nil {
+	if err1 = utils.SaveStructToJSON(stateInMicrunDir, serializable); err1 != nil {
 		failed1 = true
-		err1 = fmt.Errorf("failed to save state to <%s>: %w", stateInMicranDir, err1)
+		err1 = fmt.Errorf("failed to save state to <%s>: %w", stateInMicrunDir, err1)
 	}
 
 	if failed1 && failed {
@@ -1043,8 +1044,8 @@ func (c *Container) RestoreState() error {
 
 	var storage ContainerStorage
 
-	stateInMicranDir := filepath.Join(defs.MicrunContainerStateDir, c.id, defs.MicantainerStateFile)
-	raw, err := utils.RestoreStructFromJSON(stateInMicranDir)
+	stateInMicrunDir := filepath.Join(defs.MicrunStateDir, c.id, defs.MicrunContainerStateFile)
+	raw, err := utils.RestoreStructFromJSON(stateInMicrunDir)
 
 	if err != nil {
 		cwd, err := os.Getwd()
@@ -1052,7 +1053,7 @@ func (c *Container) RestoreState() error {
 			log.Warnf("Failed to get current working directory: %v", err)
 			cwd = "."
 		}
-		stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicantainerStateFile)
+		stateInBundle := filepath.Join(cwd, c.containerPath, defs.MicrunContainerStateFile)
 		raw, err = utils.RestoreStructFromJSON(stateInBundle)
 		if err != nil {
 			return fmt.Errorf("failed to restore container state from both locations: %w", err)

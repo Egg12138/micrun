@@ -146,7 +146,7 @@ func checkInfra(ct cntr.ContainerType, ocispec specs.Spec) bool {
 		hasMicrunAnn = utils.MapCheck(
 			ocispec.Annotations,
 			func(k, v string) bool {
-				return strings.HasPrefix(k, defs.MicranAnnotationPrefix)
+				return strings.HasPrefix(k, defs.MicrunAnnotationPrefix)
 			})
 		hasCRIInfraAnnotation = utils.MapCheck(
 			ocispec.Annotations,
@@ -157,7 +157,7 @@ func checkInfra(ct cntr.ContainerType, ocispec specs.Spec) bool {
 	}
 
 	isCRISandbox := ct == cntr.PodSandbox
-	log.Debugf("isCRISandbox?%v, hasCRIInfraAnnotation?%v, hasMicranAnnotation?%v",
+	log.Debugf("isCRISandbox?%v, hasCRIInfraAnnotation?%v, hasMicrunAnnotation?%v",
 		isCRISandbox, hasCRIInfraAnnotation, hasMicrunAnn)
 
 	return hasCRIInfraAnnotation
@@ -557,7 +557,7 @@ func applySandboxAnnotations(ocispec specs.Spec, cfg *cntr.SandboxConfig) {
 	}
 
 	for key, value := range ocispec.Annotations {
-		if !strings.HasPrefix(key, defs.MicranAnnotationPrefix) || value == "" {
+		if !strings.HasPrefix(key, defs.MicrunAnnotationPrefix) || value == "" {
 			continue
 		}
 		switch key {

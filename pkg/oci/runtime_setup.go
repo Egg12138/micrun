@@ -60,7 +60,7 @@ var (
 )
 
 type RuntimeConfig struct {
-	Debug        bool
+	Debug bool
 	// TODO: enable Linux host act as a container
 	HostLinuxContainer bool
 	MaxClinetNum       uint32
@@ -153,7 +153,6 @@ func (r *RuntimeConfig) SetDebug(debugStr string) {
 	}
 	r.Debug = debug
 }
-
 
 func (r *RuntimeConfig) SetMaxContainerVCPUs(cpuString string) {
 	vcpu, err := strconv.ParseUint(cpuString, 10, 32)
@@ -283,7 +282,7 @@ func (r *RuntimeConfig) SetSharedCPUPool(sharedCPUPoolStr string) {
 func (cfg *RuntimeConfig) ParseRuntimeConfigFromAnno(annotations map[string]string) *RuntimeConfig {
 	// Parse runtime-level annotations with mica annotation prefix
 	for key, value := range annotations {
-		if !strings.HasPrefix(key, defs.MicranAnnotationPrefix) || value == "" {
+		if !strings.HasPrefix(key, defs.MicrunAnnotationPrefix) || value == "" {
 			continue
 		}
 

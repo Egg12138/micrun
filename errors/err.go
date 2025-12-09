@@ -9,17 +9,17 @@ import (
 // prompt error message more friendly
 // better stack trace report
 type ErrCode int
-type MicranErr struct {
+type MicrunErr struct {
 	Code ErrCode
 	Msg  string
 }
 
-func (e *MicranErr) Error() string {
+func (e *MicrunErr) Error() string {
 	return fmt.Sprintf("[%d] %s", e.Code, e.Msg)
 }
 
-func new(code ErrCode, msg string) *MicranErr {
-	return &MicranErr{
+func new(code ErrCode, msg string) *MicrunErr {
+	return &MicrunErr{
 		Code: code,
 		Msg:  msg,
 	}

@@ -13,12 +13,12 @@ const (
 
 const (
 	// the external state directory for a container, which containers cached rootfs and serialized states
-	MicrunContainerStateDir   = "/run/micran"
-	DefaultMicaContainersRoot = "/run/micran/containers"
-	MicantainerStateFile      = "state.json"
+	MicrunStateDir            = "/run/micrun"
+	DefaultMicaContainersRoot = "/run/micrun/containers"
+	MicrunContainerStateFile  = "state.json"
 	SandboxStateFile          = "state.json"
 	// directory for sandbox data storage
-	SandboxDataDir = "/run/micran/sandbox"
+	SandboxDataDir = "/run/micrun/sandbox"
 
 	// Micrun configuration (INI today, easy to switch to TOML later).
 	MicrunConfDir    = "/etc/mica/micrun"

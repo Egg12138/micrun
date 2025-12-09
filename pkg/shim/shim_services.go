@@ -35,21 +35,30 @@ var (
 	shimPid                     = uint32(os.Getpid())
 )
 
+// TALK: why shimService maintains `mu`? why only one lock field?
+// why not guard containers field by lock?
+// 1. why shimService maintains a `mu` lock field?
+// > parallel RPC to shim service (Create, Start, Kill... at the same time)
+// > hence we need to ensure consistency and MT safe
+// 2. why not guard `containers: map[string]*shimContainer` field by a lock?
+// > due to mica rtos containerlization modle, no need to protect containers,
+// map[string]*shimContainer is simple data struct, not about real process
+// 3. why not guard event sender by a lock?
+// the go channel is basically safe enough.
 type shimService struct {
-	id          string
-	micadPid    int
-	shimPid     int
-	namespace   string
-	config      *oci.RuntimeConfig
-	containers  map[string]*shimContainer
-	sandbox     cntr.SandboxTraits
-	ctx         context.Context
-	events      chan any
-	ec          chan exitEvent
-	ss          func()
-	mu          sync.Mutex
-	monitor     chan error
-	eventSendMu sync.Mutex
+	id         string
+	micadPid   int
+	shimPid    int
+	namespace  string
+	config     *oci.RuntimeConfig
+	containers map[string]*shimContainer
+	sandbox    cntr.SandboxTraits
+	ctx        context.Context
+	events     chan any
+	ec         chan exitEvent
+	ss         func()
+	monitor    chan error
+	mu         sync.Mutex
 }
 
 func New(ctx context.Context, id string, publisher shimv2.Publisher, shutdown func()) (shimv2.Shim, error) {
@@ -410,9 +419,6 @@ func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*task
 		log.Debugf("container %s not found in shim service storage", r.ID)
 		return nil, er.ContainerNotFound
 	}
-
-	s.eventSendMu.Lock()
-	defer s.eventSendMu.Unlock()
 
 	respPid := shimPid
 	// wannna start a exec process in a container

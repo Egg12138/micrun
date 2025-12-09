@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	defs "micrun/definitions"
+	er "micrun/errors"
 	log "micrun/logger"
 	"micrun/pkg/configstack"
 	libmica "micrun/pkg/libmica"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/containerd/cgroups"
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
+	"github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/mount"
 	shimv2 "github.com/containerd/containerd/runtime/v2/shim"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -162,7 +164,7 @@ func cleanupContainer(ctx context.Context, sandboxID, containerID, bundle string
 
 // setupStateDir ensures the state directory for micran exists.
 func setupStateDir() error {
-	if err := os.MkdirAll(defs.MicrunContainerStateDir, 0755); err != nil {
+	if err := os.MkdirAll(defs.MicrunStateDir, 0755); err != nil {
 		return fmt.Errorf("failed to create micran state directory: %w", err)
 	}
 	return nil
@@ -344,4 +346,29 @@ func getConfigPathFromOldCRI(v any) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func (s *shimService) getContainerStatus(id string) (task.Status, error) {
+	if s.sandbox == nil {
+		log.Debugf("Sandbox is nil, cannot get status for container %s", id)
+		return task.Status_UNKNOWN, er.SandboxNotFound
+	}
+	cs, err := s.sandbox.StatusContainer(id)
+	if err != nil {
+		return task.Status_UNKNOWN, err
+	}
+
+	var st task.Status
+	switch cs.State.State {
+	case cntr.StateReady:
+		st = task.Status_CREATED
+	case cntr.StateRunning:
+		st = task.Status_RUNNING
+	case cntr.StatePaused:
+		st = task.Status_PAUSED
+	case cntr.StateStopped:
+		st = task.Status_STOPPED
+	}
+
+	return st, nil
 }

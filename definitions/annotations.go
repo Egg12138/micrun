@@ -3,23 +3,23 @@ package defs
 // TODO: Migrate annotations.go to package annotations
 // OCI and runtime annotations.
 const (
-	// MicranAnnotationPrefix is the prefix for all micran-specific annotations.
-	MicranAnnotationPrefix = "org.openeuler.micrun." // For runtime-level configuration.
+	// MicrunAnnotationPrefix is the prefix for all micran-specific annotations.
+	MicrunAnnotationPrefix = "org.openeuler.micrun." // For runtime-level configuration.
 	// PedPrefix is the prefix for pedestal-related configurations.
-	PedPrefix = MicranAnnotationPrefix + "ped."
+	PedPrefix = MicrunAnnotationPrefix + "ped."
 	// RuntimePrefix is the prefix for runtime-related configurations.
-	RuntimePrefix = MicranAnnotationPrefix + "runtime."
+	RuntimePrefix = MicrunAnnotationPrefix + "runtime."
 	// ContainerPrefix is the prefix for container-related configurations.
-	ContainerPrefix = MicranAnnotationPrefix + "container."
+	ContainerPrefix = MicrunAnnotationPrefix + "container."
 	// CompatPrefix is the prefix for compatibility-related configurations.
-	CompatPrefix = MicranAnnotationPrefix + "compatibility."
+	CompatPrefix = MicrunAnnotationPrefix + "compatibility."
 
 	// BundlePathKey is the annotation key for the OCI configuration file path.
-	BundlePathKey = MicranAnnotationPrefix + "pkg.oci.bundle_path"
+	BundlePathKey = MicrunAnnotationPrefix + "pkg.oci.bundle_path"
 	// ContainerTypeKey is the annotation key for the container type.
-	ContainerTypeKey = MicranAnnotationPrefix + "pkg.oci.container_type"
+	ContainerTypeKey = MicrunAnnotationPrefix + "pkg.oci.container_type"
 	// SandboxConfigPathKey is the annotation key for the sandbox configuration path.
-	SandboxConfigPathKey = MicranAnnotationPrefix + "config_path"
+	SandboxConfigPathKey = MicrunAnnotationPrefix + "config_path"
 )
 
 // Pedestal configurations.

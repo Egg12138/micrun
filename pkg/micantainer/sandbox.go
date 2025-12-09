@@ -199,7 +199,7 @@ func (s *Sandbox) Stop(ctx context.Context, force bool) error {
 	return nil
 }
 
-// Stop rtos clients && sandbox
+// Delete delete containers and then clean storage
 func (s *Sandbox) Delete(ctx context.Context) error {
 
 	if s.state.State != StateReady &&
@@ -212,6 +212,10 @@ func (s *Sandbox) Delete(ctx context.Context) error {
 		if err := c.delete(ctx); err != nil {
 			log.Errorf("failed to delete container %s", c.id)
 		}
+	}
+
+	if err := s.removeNetwork(); err != nil {
+		log.Warnf("failed to remove network for sandbox %s: %v", s.id, err)
 	}
 
 	return s.cleanSandboxStorage()
@@ -655,6 +659,7 @@ func (s *Sandbox) addContainer(c *Container) error {
 }
 
 // TODO: not finished well
+// NOTICE: we need idempotence, and make removeNetwork()
 func (s *Sandbox) removeNetwork() error {
 	log.Infof("remove network for sandbox %s", s.id)
 	if s.config == nil {

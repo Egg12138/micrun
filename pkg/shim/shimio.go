@@ -8,6 +8,7 @@ import (
 	log "micrun/logger"
 	"net/url"
 	"os"
+	"sync"
 	"syscall"
 
 	"github.com/containerd/containerd/errdefs"
@@ -16,6 +17,7 @@ import (
 )
 
 // stdioInfo defines the standard IO paths for a container.
+// in practice, since the client RTOS doesn't distinguish stderr, merge stdout and stderr forever
 type stdioInfo struct {
 	Stdin    string
 	Stdout   string
@@ -217,4 +219,41 @@ func (f *fileIO) Stdout() io.Writer {
 
 func (f *fileIO) Stderr() io.Writer {
 	return f.out
+}
+
+// ioCopy manages copying data between the container's IO streams and the pipe.
+func ioCopy(exitch, stdinCloser chan struct{}, tty *ttyIO, stdinPipe io.WriteCloser, stdoutPipe io.Reader) {
+	var wg sync.WaitGroup
+
+	// Mica client **always** create ONE pty slave, we have to handle bytes from it for all different io stream methods of containerd
+	if tty.io.Stdout() != nil {
+		wg.Add(1)
+		go func() {
+			log.Debug("Starting stdout copy from PTY to containerd.")
+			io.Copy(tty.io.Stdout(), stdoutPipe)
+			log.Debug("Stdout copy completed.")
+			wg.Done()
+			if tty.io.Stdin() != nil {
+				tty.io.Stdin().Close()
+			}
+			log.Info("Out stream copy exited.")
+		}()
+	}
+
+	if tty.io.Stdin() != nil {
+		wg.Add(1)
+		go func() {
+			log.Debug("Starting stdin copy from containerd to PTY.")
+			// TALK: Maybe CopyBuffer with a buffer pool is a better choice?
+			io.Copy(stdinPipe, tty.io.Stdin())
+			log.Debug("Stdin copy completed.")
+			close(stdinCloser)
+			wg.Done()
+			log.Info("Stdin io stream copy exited.")
+		}()
+	}
+
+	wg.Wait()
+	close(exitch)
+	log.Debug("All IO copies completed.")
 }

@@ -24,7 +24,7 @@ import (
 // This function orchestrates the entire container/sandbox creation flow, translating containerd requests
 // into mica runtime operations. The process involves: **file paths are shown for example**
 //
-//  1. State Directory Setup: Ensures /tmp/micran (MicranContainerStateDir) exists for runtime state.
+//  1. State Directory Setup: Ensures /tmp/micrun (MicrunContainerStateDir) exists for runtime state.
 //     This directory stores runtime metadata and facilitates communication with mica daemon.
 //
 //  2. Rootfs Processing: Extracts filesystem mount information from the request.

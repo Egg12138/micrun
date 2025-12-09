@@ -40,4 +40,4 @@ uniproton = "latest"
 # Example custom extension section (users can add their own)
 [custom.example]
 build_date = "{{timestamp}}"
-maintainer = "Micran Team"
+maintainer = "openEuler Embedded"

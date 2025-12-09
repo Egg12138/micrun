@@ -7,30 +7,45 @@
 * fix io bugs
 * better netns handling
 * fix metrics bugs
+* fix pty bugs
+* remove redundant definitions
 * refactor codes -> get a shrinked minimal version
+* fix goroutine leaks and possible blobks 
 * consider a proper managment stragety for mica-image-builder (in yocto), uv and poetry may be not a good choice for this case
 
 ## todos in weeks
 
 to consider:
 
+* 
 * update mica-image-builder:
 > bundle content: add a client.conf
 > rename to micrun-image-builder
 * is it **worthy?** to implementa micrun a **common runtime** which is capable of dealing with Linux OCI images?
 > 1. ~~implement it manually~~
 > 2. send request to other runtimes: lcr, runc, crun, gvisor, youki, etc.. when container is a standard Linux OCI image, filtered by annotations
-     if annotations contain neither `defs.MicranAnnotationPrefix` nor `Infra container annotation`, transfer tasks to external runtime
+     if annotations contain neither `defs.MicrunAnnotationPrefix` nor `Infra container annotation`, transfer tasks to external runtime
 
 * youki (0.5.7, arm64, musl), binary size 5.6MB; about `200%` speed of `runc`; repo activity: pretty active but on an obivious decline; slow to build in yocto (rustc + downloading dependencies)
 * crun (1.25.1, arm64, glibc), binary size 3.1MB; about `400%` speed of `runc`; repo activity: pretty active;
 * lcr (together with iSulad, not a common choice for other container engine)
 * ==> **crun** is preferred: lightweight, fast and fit with openEuler Embedded building tools
 
-3. 
+
+
+
+## improvements
+
+* cycle referencing (container <-> sandbox)
+> cntr.Container.sandbox, cntr.Sandbox.containers
+> for example, cntr.Container.delete() calls sandbox methods, and cntr.sandbox.Delete calls container methods
+> it could be good to remove c.sandbox.methods 
+* 
+
 
 # micrun container runimte
 
+## 
 
 ## register runtime
 
