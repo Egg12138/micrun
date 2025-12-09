@@ -51,6 +51,11 @@ func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialRe
 		return res
 	}
 
+	// CPU 资源映射
+	// 映射关系：
+	// 1. Container CPU Share (1024:256) -> RTOS Client CPU Weight
+	// 2. Container Quota/Period (1:100) -> RTOS Client CPU Capacity (百分比)
+	// 3. Container cpuset -> RTOS Client CPUS
 	if cpu := spec.Linux.Resources.CPU; cpu != nil {
 		var vcpuNum uint32
 		cpus, cpuSetVCpuNum := validateCPUSet(cpu.Cpus)
@@ -58,13 +63,20 @@ func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialRe
 			res.ClientCpuSet = cpus
 			vcpuNum = cpuSetVCpuNum
 		}
+
+		// VCPU 数量策略：默认 VCPU = 1
+		// 可通过 vcpu_pcpu_binding 选项启用 VCPU = Size(cpuSetUnion)
 		if vcpuNum > 0 {
 			*res.Vcpu = uint32(vcpuNum)
 		}
 
+		// 处理 CPU Quota/Period -> CPU Capacity 映射
+		// 转换公式：capacity = (quota × 100) / period
+		// 表示占满单核的百分比，100% = 占满一个 vCPU
 		if cpu.Quota != nil && *cpu.Quota > 0 && cpu.Period != nil && *cpu.Period > 0 {
 			rawCapacity := uint32((*cpu.Quota * 100) / int64(*cpu.Period))
 			if rawCapacity > 0 {
+				// 应用 cpuset 限制：最终容量 = min(quota容量, cpuset容量)
 				if vcpuNum > 0 {
 					maxByCpuset := vcpuNum * 100
 					if rawCapacity > maxByCpuset {
@@ -75,11 +87,14 @@ func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialRe
 			}
 		} else {
 			log.Debugf("cpu quota/period pair = < %v:%v > is incomplete", cpu.Quota, cpu.Period)
+			// 如果没有 quota/period，但有 cpuset，则容量 = cpuset_size × 100%
 			if vcpuNum > 0 {
 				*res.CpuCpacity = vcpuNum * 100
 			}
 		}
 
+		// 处理 CPU Shares -> CPU Weight 映射
+		// 转换比例：1024 (cgroup默认) : 256 (Xen默认) = 4:1
 		if cpu.Shares != nil && *cpu.Shares > 0 {
 			if convertShares {
 				weight := ShareToWeight(*cpu.Shares)
@@ -98,6 +113,11 @@ func linuxResourceToEssential(spec *specs.Spec, convertShares bool) *EssentialRe
 		res.CPUWeight = nil
 	}
 
+	// 内存资源映射
+	// 映射关系：
+	// 1. Container memory limit -> RTOS Client memory limit
+	// 2. Container memory reservation -> RTOS Client memory min
+	// 3. memoryThreshold 仅在 micaexecutor 中记录，保证 memory threshold >= container memory limit
 	if mem := spec.Linux.Resources.Memory; mem != nil && mem.Limit != nil && *mem.Limit > 0 {
 		*res.MemoryMaxMB = uint32(*mem.Limit >> 20)
 	}

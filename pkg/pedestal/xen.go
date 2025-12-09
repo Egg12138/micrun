@@ -20,6 +20,9 @@ import (
 	"micrun/pkg/cpuset"
 )
 
+// CPU 资源映射常量
+// 映射关系：Container CPU Share (1024:256) -> RTOS Client CPU Weight
+// 转换比例：1024 (cgroup默认) : 256 (Xen默认) = 4:1
 const DefaultCgroupShare = 1024
 const DefaultXenWeight = 256
 const ShareWeightRatio = DefaultCgroupShare / DefaultXenWeight
@@ -28,6 +31,12 @@ const balloonDriverName = "xen_balloon"
 // ShareToWeight converts an OCI cpu.shares style value into the Xen credit2
 // scheduler weight range [1, 65535]. When shares is 0 (unset) we fall back to
 // Xen's default weight.
+// ShareToWeight converts cgroup CPU shares to Xen CPU weight.
+// 映射关系：Container CPU Share (1024:256) -> RTOS Client CPU Weight
+// 转换公式：weight = max(1, min(shares / 4, 65535))
+// 范围：
+//   - cgroup shares: 2-262144, default=1024
+//   - Xen weight: 1-65535, default=256
 func ShareToWeight(shares uint64) uint32 {
 	if ShareWeightRatio <= 0 {
 		return DefaultXenWeight

@@ -14,10 +14,17 @@ const cpuCapRatio = 100
 // after allocating sandbox cpus in xen pool is finished.
 func (me *MicaExecutor) UpdateSandboxPoolVCPUs() {}
 
+// MemoryThresholdMB returns the current memory threshold in MiB.
+// 内存资源映射规范：
+// 1. Container memory limit -> RTOS Client memory limit
+// 2. Container memory reservation -> RTOS Client memory min
+// 3. memoryThreshold 仅在 micaexecutor 中记录，保证 memory threshold >= container memory limit
 func (me *MicaExecutor) MemoryThresholdMB() uint32 {
 	return me.memoryThresholdMB
 }
 
+// CurrentMaxMem returns the current memory limit in MiB.
+// 对应 RTOS Client memory limit，来自 Container memory limit
 func (me *MicaExecutor) CurrentMaxMem() uint32 {
 	if me.records.memoryMB <= 0 {
 		return 0
@@ -25,15 +32,22 @@ func (me *MicaExecutor) CurrentMaxMem() uint32 {
 	return uint32(me.records.memoryMB)
 }
 
+// RecordMemoryState records the current memory state.
+// memoryThreshold 设计为单调递增的，仅在新的 memory threshold 出现时才会正向更新
 func (me *MicaExecutor) RecordMemoryState(current, threshold uint32) {
 	me.records.memoryMB = int(current)
 	if threshold == 0 {
 		threshold = current
 	}
+	// 单调递增：只更新更大的阈值
 	me.memoryThresholdMB = max(me.memoryThresholdMB, threshold)
 }
 
 // EnsureMemoryLimit applies the requested memory limit, expanding the pedestal maximum first when needed.
+// 内存资源映射规范：
+// 1. 保证 memory threshold >= container memory limit
+// 2. memoryThreshold 单调递增，只增不减
+// 3. 先更新 threshold，再更新实际内存限制
 func (me *MicaExecutor) EnsureMemoryLimit(target uint32) error {
 	current := me.CurrentMaxMem()
 	threshold := me.MemoryThresholdMB()
@@ -42,10 +56,12 @@ func (me *MicaExecutor) EnsureMemoryLimit(target uint32) error {
 		threshold = current
 	}
 
+	// 保证 memory threshold >= container memory limit
 	if threshold < target {
 		if err := me.UpdateMemoryThreshold(target); err != nil {
 			return err
 		}
+		// 单调递增：只更新更大的阈值
 		me.memoryThresholdMB = target
 	}
 
@@ -117,11 +133,17 @@ func (me *MicaExecutor) UpdateCPUWeight(weight uint32) error {
 	return err
 }
 
-// NOTICE: MemoryLimit is not max memory of client.It is the max memory
-// that pedestal can allocate to container.
-// Memory is just the max memory of a client
+// UpdateMemoryThreshold updates the memory threshold for the RTOS client.
+// NOTICE: MemoryThreshold is not the max memory of client. It is the max memory
+// that pedestal can allocate to container (pedestal max memory).
+// Memory is just the max memory of a client.
+// 内存资源映射规范：
+// 1. memoryThreshold 单调递增，只增不减
+// 2. 保证 memory threshold >= container memory limit
+// 3. 仅在 micaexecutor 中记录 memoryThreshold
 func (me *MicaExecutor) UpdateMemoryThreshold(memMiB uint32) error {
-	if me.memoryThresholdMB > memMiB {
+	// 单调递增：如果当前阈值已经 >= 目标值，不需要更新
+	if me.memoryThresholdMB >= memMiB {
 		return nil
 	}
 	log.Debugf("update memory threshold: container=%s old=%d new=%d", me.Id, me.records.memoryMB, memMiB)
@@ -131,12 +153,16 @@ func (me *MicaExecutor) UpdateMemoryThreshold(memMiB uint32) error {
 	if err != nil {
 		log.Warnf("failed to request new max memory \"%d\" to container: %v", memMiB, err)
 	} else {
+		// 单调递增：只更新更大的阈值
 		me.memoryThresholdMB = max(memMiB, me.memoryThresholdMB)
 		log.Debugf("update max memory threshold to %d", memMiB)
 	}
 	return err
 }
 
+// UpdateMemory updates the actual memory limit for the RTOS client.
+// 映射关系：Container memory limit -> RTOS Client memory limit
+// 同时保证 memory threshold >= container memory limit
 func (me *MicaExecutor) UpdateMemory(memMiB uint32) error {
 	log.Debugf("update memory: container=%s old=%d new=%d", me.Id, me.records.memoryMB, memMiB)
 	cmdArgs := []string{"Memory", strconv.Itoa(int(memMiB))}
@@ -145,7 +171,9 @@ func (me *MicaExecutor) UpdateMemory(memMiB uint32) error {
 	if err != nil {
 		log.Warnf("failed to request new memory \"%d\" to container: %v", memMiB, err)
 	} else {
+		// 更新 RTOS Client memory limit
 		me.records.memoryMB = int(memMiB)
+		// 保证 memory threshold >= container memory limit
 		me.memoryThresholdMB = max(memMiB, me.memoryThresholdMB)
 		log.Debugf("update memory to %d", memMiB)
 	}
@@ -211,6 +239,9 @@ func (me *MicaExecutor) NeedUpdateMemLimit(target uint32) bool {
 	return me.CurrentMaxMem() != target
 }
 
+// NeedUpdateMemThreshold checks if memory threshold needs to be updated.
+// 内存资源映射规范：memoryThreshold 单调递增，只增不减
+// 需要更新的条件：当前阈值 < 目标阈值
 func (me *MicaExecutor) NeedUpdateMemThreshold(target uint32) bool {
 	return me.memoryThresholdMB < target
 }

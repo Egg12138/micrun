@@ -488,7 +488,7 @@ func applyContainerRuntimeDefaults(config *cntr.ContainerConfig, annotations map
 	}
 
 	config.MaxVcpuNum = resolveMaxVcpu(annotations, runtimeCfg)
-	config.MemoryThresholdMB = calculatePedMaxMemory(config, runtimeCfg)
+	config.MemoryThresholdMB = calculateClientMemThreshold(config, runtimeCfg)
 }
 
 func resolveMaxVcpu(annotations map[string]string, runtimeCfg *RuntimeConfig) uint32 {
@@ -509,24 +509,41 @@ func resolveMaxVcpu(annotations map[string]string, runtimeCfg *RuntimeConfig) ui
 	return defaultMaxContainerVCPUs
 }
 
-// rename -> calculateClientMemThreshold
-func calculatePedMaxMemory(config *cntr.ContainerConfig, runtimeCfg *RuntimeConfig) uint32 {
-	// current RTOS max memory, <= memory threshold
+// calculateClientMemThreshold calculates the memory threshold for RTOS client.
+// 内存资源映射规范：
+// 1. Container memory limit -> RTOS Client memory limit
+// 2. Container memory reservation -> RTOS Client memory min
+// 3. memoryThreshold 仅在 micaexecutor 中记录，保证 memory threshold >= container memory limit
+// 4. memoryThreshold 设计为单调递增的，仅在新的 memory threshold 出现时才会正向更新
+//
+// 当前实现策略：memory threshold = max(2 * memory limit, 默认值)
+// 这是保守策略，确保 pedestal 有足够内存分配给 RTOS client
+func calculateClientMemThreshold(config *cntr.ContainerConfig, runtimeCfg *RuntimeConfig) uint32 {
+	// 优先使用 container memory limit
 	maxMem := config.MemoryLimitMiB()
+
+	// 如果没有设置 memory limit，使用 memory reservation
 	if maxMem == 0 {
 		maxMem = config.MemoryReservationMiB()
 	}
+
+	// 如果都没有设置，使用 runtime 配置的默认值
 	if maxMem == 0 && runtimeCfg != nil && runtimeCfg.MinContainerMemMB > 0 {
 		maxMem = runtimeCfg.MinContainerMemMB
 	}
+
+	// 最后使用全局默认值
 	if maxMem == 0 {
 		maxMem = defs.DefaultMinMemMB
 	}
 
+	// 安全检查：避免溢出
 	if maxMem > math.MaxUint32/2 {
 		return math.MaxUint32 - 1
 	}
 
+	// 保守策略：memory threshold = 2 * memory limit
+	// 确保 pedestal 有足够内存分配给 RTOS client
 	doubled := maxMem * 2
 	if doubled == 0 {
 		doubled = defs.DefaultMinMemMB * 2

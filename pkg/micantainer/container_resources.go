@@ -15,6 +15,16 @@ const (
 	num2CapRatio int64 = 100
 )
 
+// 资源映射规范：
+// 1. CPU 资源映射：
+//    - Container CPU Share (1024:256) -> RTOS Client CPU Weight
+//    - Container Quota/Period (1:100) -> RTOS Client CPU Capacity (百分比)
+//    - Container cpuset -> RTOS Client CPUS
+// 2. 内存资源映射：
+//    - Container memory limit -> RTOS Client memory limit
+//    - Container memory reservation -> RTOS Client memory min
+//    - memoryThreshold 仅在 micaexecutor 中记录，保证 memory threshold >= container memory limit
+
 func (cfg *ContainerConfig) ensureResources() *specs.LinuxResources {
 	if cfg == nil {
 		return nil
@@ -69,6 +79,9 @@ func (cfg *ContainerConfig) cpuCapacity() uint32 {
 	if *cpu.Quota <= 0 {
 		return 0
 	}
+	// CPU Quota/Period -> CPU Capacity 映射
+	// 转换公式：capacity = (quota × 100) / period
+	// 表示占满单核的百分比，100% = 占满一个 vCPU
 	capacity := (*cpu.Quota * num2CapRatio) / int64(*cpu.Period)
 	if capacity <= 0 {
 		return 0
@@ -81,6 +94,9 @@ func (cfg *ContainerConfig) cpuShares() uint64 {
 	if cpu == nil || cpu.Shares == nil {
 		return 0
 	}
+	// CPU Shares -> CPU Weight 映射
+	// 默认值：cgroup 默认 1024，Xen 默认 256
+	// 转换比例：1024 : 256 = 4:1
 	return *cpu.Shares
 }
 
@@ -89,10 +105,18 @@ func (cfg *ContainerConfig) cpuMask() string {
 	if cpu == nil {
 		return ""
 	}
+	// Container cpuset -> RTOS Client CPUS
+	// 格式："0-3" 或 "0,1,3"
+	// 作用：硬亲和性，限制客户机只能在指定的 pCPU 上运行
 	return cpu.Cpus
 }
 
 func (cfg *ContainerConfig) containerMaxMemMB() uint32 {
+	// 内存资源映射：
+	// 1. Container memory limit -> RTOS Client memory limit
+	// 2. Container memory reservation -> RTOS Client memory min
+	// 3. memoryThreshold 仅在 micaexecutor 中记录，保证 memory threshold >= container memory limit
+
 	lim := cfg.memoryLimitMB()
 	if lim != 0 {
 		return lim
@@ -137,36 +161,50 @@ func (cfg *ContainerConfig) setMemoryReservationMB(mb uint32) {
 }
 
 // CPUCapacity reports the configured CPU capacity in units of 0.01 CPUs.
+// 映射关系：Container Quota/Period (1:100) -> RTOS Client CPU Capacity (百分比)
+// 100% 表示占满一个 vCPU
 func (cfg *ContainerConfig) CPUCapacity() uint32 {
 	return cfg.cpuCapacity()
 }
 
 // CPUShares reports the configured CPU shares weight.
+// 映射关系：Container CPU Share (1024:256) -> RTOS Client CPU Weight
+// 转换比例：1024 (cgroup默认) : 256 (Xen默认) = 4:1
 func (cfg *ContainerConfig) CPUShares() uint64 {
 	return cfg.cpuShares()
 }
 
 // CPUSet returns the configured CPU affinity mask.
+// 映射关系：Container cpuset -> RTOS Client CPUS
+// 格式："0-3" 或 "0,1,3"，表示硬亲和性设置
 func (cfg *ContainerConfig) CPUSet() string {
 	return cfg.cpuMask()
 }
 
 // MemoryLimitMiB returns the configured memory limit in MiB.
+// 映射关系：Container memory limit -> RTOS Client memory limit
+// memoryThreshold 仅在 micaexecutor 中记录，保证 memory threshold >= container memory limit
 func (cfg *ContainerConfig) MemoryLimitMiB() uint32 {
 	return cfg.memoryLimitMB()
 }
 
 // MemoryReservationMiB returns the configured memory reservation in MiB.
+// 映射关系：Container memory reservation -> RTOS Client memory min
+// 保证：memory reservation < memory limit
 func (cfg *ContainerConfig) MemoryReservationMiB() uint32 {
 	return cfg.memoryReservationMB()
 }
 
 // SetMemoryReservationMB records the requested memory reservation.
+// 用于设置 RTOS Client memory min，必须小于 memory limit
 func (cfg *ContainerConfig) SetMemoryReservationMB(mb uint32) {
 	cfg.setMemoryReservationMB(mb)
 }
 
 // ParseOCIResources parses both CPU and Memory resource limits from OCI spec in a single pass
+// 遵循资源映射规范：
+// 1. CPU 资源：Share -> Weight, Quota/Period -> Capacity, cpuset -> CPUS
+// 2. 内存资源：limit -> limit, reservation -> min, threshold 单独管理
 func (r *ContainerConfig) ParseOCIResources(spec *specs.Spec) error {
 	if r.IsInfra {
 		return nil
@@ -179,9 +217,13 @@ func (r *ContainerConfig) ParseOCIResources(spec *specs.Spec) error {
 	if spec.Linux != nil && spec.Linux.Resources != nil && spec.Linux.Resources.CPU != nil {
 		r.Resources.CPU = cloneLinuxCPU(spec.Linux.Resources.CPU)
 
+		// VCPU 数量策略：默认 VCPU = 1
+		// 可通过 vcpu_pcpu_binding 选项启用 VCPU = Size(cpuSetUnion)
 		if essentialRes.Vcpu != nil && *essentialRes.Vcpu > 0 {
 			r.VCPUNum = *essentialRes.Vcpu
 		}
+
+		// Container cpuset -> RTOS Client CPUS
 		if essentialRes.ClientCpuSet != "" {
 			if cpu := r.Resources.CPU; cpu != nil {
 				cpu.Cpus = essentialRes.ClientCpuSet
@@ -226,15 +268,18 @@ func (r *ContainerConfig) ParseOCIResources(spec *specs.Spec) error {
 		}
 		log.Debugf(`
 			EssentialResource:
-			CpuCapacity = %d
-			CpuShares = %d
-			VCPUNum = %d
-			CpusetCpus = %s
-			MemoryLimit = %d
+			CpuCapacity = %d (quota/period -> capacity, 100%% = 1 vCPU)
+			CpuShares = %d (share -> weight, 1024:256 ratio)
+			VCPUNum = %d (default=1，configurable)
+			CpusetCpus = %s (hard affinity)
+			MemoryLimit = %d MiB
 		}
 		`, r.cpuCapacity(), sharesVal, r.VCPUNum, cpusetVal, r.memoryLimitMB())
 	}
 
+	// 内存资源解析
+	// Container memory limit -> RTOS Client memory limit
+	// Container memory reservation -> RTOS Client memory min
 	if spec.Linux != nil && spec.Linux.Resources != nil && spec.Linux.Resources.Memory != nil {
 		r.Resources.Memory = cloneLinuxMemory(spec.Linux.Resources.Memory)
 	} else {
