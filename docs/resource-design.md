@@ -1,5 +1,51 @@
 # Resource Design for MicRun
 
+## 资源映射规范
+
+### 1. CPU 资源配置解析与映射
+
+MicRun 从 `linux.resources.cpu` 部分解析以下 CPU 资源配置：
+
+1. **CPU Shares** (`cpu.shares`): 相对权重，用于 CPU 调度
+   - 默认值: 1024
+   - 范围: 2-262144
+2. **CPU Quota/Period** (`cpu.quota`, `cpu.period`): 绝对 CPU 限制
+   - Quota: 每个周期允许使用的 CPU 时间（微秒）
+   - Period: 调度周期长度（微秒），通常为 100000（100ms）
+   - CPU 核数限制 = quota / period
+3. **CPU Set** (`cpu.cpus`): 指定可使用的 CPU 核心
+   - 格式: "0-3" 或 "0,1,3"
+4. **CPU Memory Nodes** (`cpu.mems`): NUMA 内存节点，暂时不处理
+
+**CPU 资源映射关系：**
+```
+Container CPU Share <==(放缩比例1024:256)==> RTOS Client CPU Weight
+Container Quota/Period <==(放缩比例1:100)==> RTOS Client CPU Capacity(百分比，占满单核100%)
+Container cpuset <====> RTOS Client CPUS
+```
+
+### 2. 内存资源配置解析与映射
+
+MicRun 从 `linux.resources.memory` 部分解析以下内存资源配置：
+
+**内存资源映射关系：**
+```
+No in Container Memory resource                     <====> RTOS Client pedestal max memory
+Container memory limit <====> RTOS Client memory limit
+Container memory reservation < memory limit <====> RTOS Client memory min
+```
+
+**重要规范：**
+- **Container 语境**：使用 container memory limit, minimal memory
+- **libmica 语境**：使用 RTOS Client memory resource
+- `container.me.records` 记录了 libmica 语境下的资源量
+- `container.me.memoryThreshold` 设计为单调递增的，因此它仅在新的 memory threshold 出现时才会正更新
+- `pedestal.EssentialResource` 中并不记录 memoryThreshold，`memorymaxmb` 就是 OCI spec `mem.Limit`，`mem min` 就是 OCI spec `mem.Reservation`
+- 因为该类型记录的是实际资源，因此仅在 `micaexecutor` 中记录 memory threshold，也保证了简单——只有 `memory threshold >= container memory limit`
+- `memorymaxmb` 对应的是 mica create message 中的 memory
+
+这是正确的资源配置方案，所有资源映射实现都应据此规范进行。
+
 ## 总结
 
 ### 1. MicRun 如何映射各种资源为 Xen 的资源
