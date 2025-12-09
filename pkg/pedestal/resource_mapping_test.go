@@ -237,7 +237,7 @@ func TestMemoryResourceMapping(t *testing.T) {
 					},
 				},
 			},
-			expected: 0,
+			expected: 16, // defs.DefaultMinMemMB
 		},
 		{
 			name: "内存限制 512MB",
@@ -287,8 +287,10 @@ func TestMemoryResourceMapping(t *testing.T) {
 
 			// 验证内存限制
 			if tt.expected == 0 {
-				if res.MemoryMaxMB != nil && *res.MemoryMaxMB != 0 {
-					t.Errorf("MemoryMaxMB should be nil or 0, got %d", *res.MemoryMaxMB)
+				// 注意：InitResource() 默认设置 MemoryMaxMB = defs.DefaultMinMemMB (16)
+				// 所以当没有内存限制时，MemoryMaxMB 应该是 16 而不是 0
+				if res.MemoryMaxMB == nil || *res.MemoryMaxMB != 16 {
+					t.Errorf("MemoryMaxMB should be 16 (DefaultMinMemMB), got %v", res.MemoryMaxMB)
 				}
 			} else {
 				if res.MemoryMaxMB == nil {
