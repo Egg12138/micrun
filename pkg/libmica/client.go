@@ -36,6 +36,7 @@ const (
 	// TODO:
 	// Mica message field length constants
 	MaxNameLen         = 66
+	MaxPedLen          = 16
 	MaxFirmwarePathLen = 256
 	MaxCPUStringLen    = 128
 	MaxConfigStrLen    = 512
@@ -69,7 +70,7 @@ const (
 	createMsgDebugFieldSize    = 1
 	createMsgIntFieldSize      = 4
 	createMsgIntFieldCount     = 6
-	createMsgPrefixSize        = MaxNameLen + MaxFirmwarePathLen + MaxNameLen + MaxFirmwarePathLen + createMsgDebugFieldSize + MaxCPUStringLen
+	createMsgPrefixSize        = MaxNameLen + MaxFirmwarePathLen + MaxPedLen + MaxFirmwarePathLen + createMsgDebugFieldSize + MaxCPUStringLen
 	createMsgPaddingAfterCPU   = (createMsgIntFieldSize - (createMsgPrefixSize % createMsgIntFieldSize)) % createMsgIntFieldSize
 	createMsgPackedIntsSize    = createMsgIntFieldCount * createMsgIntFieldSize
 	createMsgSerializedBufSize = createMsgPrefixSize + createMsgPaddingAfterCPU + createMsgPackedIntsSize + MaxConfigStrLen*2
@@ -193,7 +194,7 @@ type MicaClientConf struct {
 	// path is the firmware path (<OS>.elf)
 	path [MaxFirmwarePathLen]byte
 	// ped is string of pedestal type: xen, fusionDock, acrn, etc.
-	ped [MaxNameLen]byte
+	ped [MaxPedLen]byte
 	// for xen, pedcfg is the relative path of <OS>.bin
 	pedcfg [MaxFirmwarePathLen]byte
 	// debug flag
@@ -282,8 +283,8 @@ func (m *MicaClientConf) pack() []byte {
 	offset += MaxNameLen
 	copy(buf[offset:offset+MaxFirmwarePathLen], m.path[:])
 	offset += MaxFirmwarePathLen
-	copy(buf[offset:offset+MaxNameLen], m.ped[:])
-	offset += MaxNameLen
+	copy(buf[offset:offset+MaxPedLen], m.ped[:])
+	offset += MaxPedLen
 	copy(buf[offset:offset+MaxFirmwarePathLen], m.pedcfg[:])
 	offset += MaxFirmwarePathLen
 

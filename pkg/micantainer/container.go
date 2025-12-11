@@ -1181,5 +1181,6 @@ func (c *Container) cpuUnset() bool {
 // notOperational checks if the container is not in a state to be operated on.
 func (c *Container) notOperational() bool {
 	currentState := c.checkState()
+
 	return currentState != StateReady && currentState != StateRunning
 }

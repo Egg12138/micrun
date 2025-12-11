@@ -39,10 +39,10 @@ const (
 	FirmwarePathAnno = ContainerPrefix + "firmware_path"
 	// FirmwareHash is the sha-256 hash of the firmware.
 	FirmwareHash = ContainerPrefix + "firmware_hash"
-	// Some rtos may not support in-client shutdown well, so micran add timeout autodisconnect
-	PtyAutoClose = ContainerPrefix + "pty_auto_disconnect"
+	// Some rtos may not support in-client shutdown well, so micrun add timeout autodisconnect
+	AutoClose = ContainerPrefix + "auto_close"
 	// Default to be 30 seconds, future: read this default timeout from config file
-	PtyAutoCloseTimeout = ContainerPrefix + "pty_auto_disconnect_timeout"
+	AutoCloseTimeout = ContainerPrefix + "auto_disconnect_timeout"
 	// Pedtype specifies the pedestal type.
 	Pedtype = PedPrefix + "pedestal"
 	// PedCompat specifies compatibility options: format "^versionX" (deprecated, use CompatPrefix directly)
@@ -74,6 +74,8 @@ const (
 	RuntimeDebug = RuntimePrefix + "debug"
 	// RuntimeExclusiveDom0CPU toggles whether Dom0 CPUs are kept exclusive (Xen).
 	RuntimeExclusiveDom0CPU = RuntimePrefix + "exclusive_dom0_cpu"
+	// TODO: implement the logic binding vpuc number and size(cpusetUnion of pcpu)
+	VCPUBinding = RuntimePrefix + "vcpu_pcpu_binding"
 )
 
 const (

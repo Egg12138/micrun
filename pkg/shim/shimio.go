@@ -8,11 +8,14 @@ import (
 	log "micrun/logger"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/fifo"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/execabs"
 )
 
@@ -256,4 +259,41 @@ func ioCopy(exitch, stdinCloser chan struct{}, tty *ttyIO, stdinPipe io.WriteClo
 	wg.Wait()
 	close(exitch)
 	log.Debug("All IO copies completed.")
+}
+
+// getBoolAnnotation parses a boolean annotation from the container spec with a default value.
+// Returns (value, isExplicitlySet) where isExplicitlySet indicates if the annotation was provided.
+func getBoolAnnotation(spec *specs.Spec, key string, defaultValue bool) (bool, bool) {
+	if spec == nil || spec.Annotations == nil {
+		return defaultValue, false
+	}
+
+	if value, ok := spec.Annotations[key]; ok {
+		if parsed, err := strconv.ParseBool(value); err == nil {
+			return parsed, true
+		}
+		log.Warnf("Failed to parse boolean annotation, using default: %v", defaultValue)
+	}
+	return defaultValue, false
+}
+
+// getDurationAnnotation parses a duration annotation (in seconds) from the container spec with a default value.
+// Returns (value, isExplicitlySet) where isExplicitlySet indicates if the annotation was provided.
+func getDurationAnnotation(spec *specs.Spec, key string, defaultValue time.Duration) (time.Duration, bool) {
+	if spec == nil || spec.Annotations == nil {
+		return defaultValue, false
+	}
+
+	if value, ok := spec.Annotations[key]; ok {
+		if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+			duration := time.Duration(seconds) * time.Second
+			if duration > 0 {
+				return duration, true
+			}
+			log.Warnf("annotation %s has invalid duration %s, using default %v", key, value, defaultValue)
+		} else {
+			log.Warnf("annotation %s parse error: %v, defaulting to %v", key, err, defaultValue)
+		}
+	}
+	return defaultValue, false
 }

@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	ok0 = 0
+	okCode = 0
 )
 
 // Define the structure that matches what we store
@@ -477,17 +477,17 @@ func (s *Sandbox) WaitContainerExit(ctx context.Context, containerID string) (in
 
 	c, ok := s.containers[containerID]
 	if !ok {
-		return ok0, er.ContainerNotFound
+		return okCode, er.ContainerNotFound
 	}
 
 	state := c.checkState()
 	if state == StateDown {
-		return ok0, er.ContainerDown
+		return okCode, er.ContainerDown
 	}
 
 	// RISK: we set sandbox state to stop before applying container stop
 	if state == StateStopped {
-		return ok0, nil
+		return okCode, nil
 	}
 
 	log.Infof("wait for container=%s exiting", containerID)
@@ -498,9 +498,9 @@ func (s *Sandbox) WaitContainerExit(ctx context.Context, containerID string) (in
 
 	select {
 	case <-ctx.Done():
-		return ok0, ctx.Err()
+		return okCode, ctx.Err()
 	case <-c.exitNotifier:
-		return ok0, nil
+		return okCode, nil
 	}
 }
 

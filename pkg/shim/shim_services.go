@@ -28,7 +28,11 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-const channelSize = 128
+const (
+	channelSize = 128
+	okCode      = 0
+	exitCode    = 255
+)
 
 var (
 	_       taskAPI.TaskService = (*shimService)(nil)
@@ -376,7 +380,6 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 	}
 
 	// create container sync
-
 	container, err := create(ctx, s, r)
 	if err != nil {
 		return nil, err
@@ -409,8 +412,8 @@ func (s *shimService) Create(ctx context.Context, r *taskAPI.CreateTaskRequest) 
 		Pid: pid,
 	}, nil
 }
-func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 
+func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*taskAPI.StartResponse, error) {
 	log.Debugf("starting container %s", r.ID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -421,43 +424,12 @@ func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*task
 	}
 
 	respPid := shimPid
-	// wannna start a exec process in a container
 	if r.ExecID != "" {
-		execProc, exists := c.execs[r.ExecID]
-		if !exists {
-			return nil, errdefs.ToGRPCf(errdefs.ErrNotFound, "exec %s not found in container %s", r.ExecID, r.ID)
-		}
-		if c.status != task.Status_RUNNING {
-			return nil, errdefs.ToGRPCf(errdefs.ErrFailedPrecondition, "container %s must be running to start exec %s", r.ID, r.ExecID)
-		}
-
-		// Bridge exec stdio to the container PTY
-		key := r.ID + "|" + r.ExecID
-		if s.sandbox == nil {
-			log.Debugf("Sandbox is nil, cannot get IOStream for exec %s/%s", r.ID, r.ExecID)
-		} else {
-			stdin, stdout, _, err := s.sandbox.IOStream(c.id, c.id)
-			if err != nil {
-				log.Debugf("exec io: IOStream failed for %s/%s: %v", r.ID, r.ExecID, err)
-			} else {
-				tty, err := newTtyIO(ctx, c.id, spec.stdin, spec.stdout, spec.stderr, spec.terminal)
-				if err != nil {
-					log.Debugf("exec io: newTtyIO failed for %s/%s: %v", r.ID, r.ExecID, err)
-				} else {
-					stdinCloser := make(chan struct{})
-					go ioCopy(c.exitIOch, stdinCloser, tty, stdin, stdout)
-					execStatesMu.Lock()
-					execStates[key] = execIOState{tty: tty, stdinCloser: stdinCloser}
-					execStatesMu.Unlock()
-				}
-			}
-		}
-
-		execProc.markStarted(shimPid)
+		log.Infof("container %s has no exec process", r.ID)
 		s.send(&events.TaskExecStarted{
 			ContainerID: c.id,
 			ExecID:      r.ExecID,
-			Pid:         shimPid,
+			Pid:         respPid,
 		})
 	} else {
 		log.Infof("starting container %s", c.id)
@@ -465,24 +437,86 @@ func (s *shimService) Start(ctx context.Context, r *taskAPI.StartRequest) (*task
 		if err != nil {
 			return nil, errdefs.ToGRPC(err)
 		}
-		pid := c.pid
-		if pid == 0 {
-			pid = shimPid
+		if c.pid != 0 {
+			respPid = c.pid
 		}
 		s.send(&events.TaskStart{
 			ContainerID: c.id,
-			Pid:         pid,
+			Pid:         respPid,
 		})
-		respPid = pid
 	}
 
 	return &taskAPI.StartResponse{
 		Pid: respPid,
 	}, nil
 }
-func (s *shimService) Delete(context.Context, *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
+func (s *shimService) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*taskAPI.DeleteResponse, error) {
 
-	return nil, nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	log.Debugf("deleting container %s", r.ID)
+
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		log.Debugf("container %s not found in shim service storage (idempotent delete)", r.ID)
+		s.send(&events.TaskDelete{
+			ContainerID: r.ID,
+			ExitedAt:    timestamppb.Now(),
+			Pid:         shimPid,
+			ExitStatus:  okCode,
+		})
+		delete(s.containers, r.ID)
+		return &taskAPI.DeleteResponse{
+			ExitStatus: okCode,
+			ExitedAt:   timestamppb.Now(),
+			Pid:        shimPid,
+		}, nil
+	}
+
+	if r.ExecID != "" {
+		return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "exec processes are not supported for container %s", r.ID)
+	}
+
+	if c.cType.CanBeSandbox() {
+		// Check if sandbox exists before proceeding
+		if s.sandbox == nil {
+			log.Debugf("Sandbox already deleted in Delete method for container %s", c.id)
+		} else {
+			sandboxID := s.sandbox.SandboxID()
+
+			// Stop and delete the entire sandbox
+			if err := s.sandbox.Stop(ctx, true); err != nil {
+				log.Debugf("Stop sandbox %s returned: %v", sandboxID, err)
+			}
+			if err := s.sandbox.Delete(ctx); err != nil {
+				log.Debugf("Delete sandbox %s returned: %v", sandboxID, err)
+			}
+			s.sandbox = nil
+		}
+	}
+
+	// Delete the container (handles pod containers, unmount, registry cleanup)
+	if err := deleteContainer(ctx, s, c); err != nil {
+		return nil, err
+	}
+
+	pid := c.pid
+	if pid == 0 {
+		pid = shimPid
+	}
+
+	s.send(&events.TaskDelete{
+		ContainerID: r.ID,
+		ExitedAt:    timestamppb.New(c.exitTime),
+		Pid:         pid,
+		ExitStatus:  c.exit,
+	})
+
+	return &taskAPI.DeleteResponse{
+		ExitStatus: c.exit,
+		ExitedAt:   timestamppb.New(c.exitTime),
+		Pid:        pid,
+	}, nil
 }
 func (s *shimService) Pids(context.Context, *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
 
