@@ -17,6 +17,8 @@ import (
 	"github.com/containerd/fifo"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/execabs"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 // stdioInfo defines the standard IO paths for a container.
@@ -225,16 +227,29 @@ func (f *fileIO) Stderr() io.Writer {
 }
 
 // ioCopy manages copying data between the container's IO streams and the pipe.
-func ioCopy(exitch, stdinCloser chan struct{}, tty *ttyIO, stdinPipe io.WriteCloser, stdoutPipe io.Reader) {
+func ioCopy(ctx context.Context, exitch, stdinCloser chan struct{}, tty *ttyIO, stdinPipe io.WriteCloser, stdoutPipe io.Reader, onInterrupt func(syscall.Signal, string)) {
 	var wg sync.WaitGroup
+	killOnce := sync.Once{}
+	notifyInterrupt := func(sig syscall.Signal, reason string) {
+		if onInterrupt == nil {
+			return
+		}
+		killOnce.Do(func() {
+			onInterrupt(sig, reason)
+		})
+	}
+	control := detectControlChars()
 
 	// Mica client **always** create ONE pty slave, we have to handle bytes from it for all different io stream methods of containerd
 	if tty.io.Stdout() != nil {
 		wg.Add(1)
 		go func() {
 			log.Debug("Starting stdout copy from PTY to containerd.")
-			io.Copy(tty.io.Stdout(), stdoutPipe)
-			log.Debug("Stdout copy completed.")
+			if _, err := io.Copy(tty.io.Stdout(), stdoutPipe); err != nil {
+				log.Debugf("stdout copy finished with error: %v", err)
+			} else {
+				log.Debug("Stdout copy completed.")
+			}
 			wg.Done()
 			if tty.io.Stdin() != nil {
 				tty.io.Stdin().Close()
@@ -247,18 +262,92 @@ func ioCopy(exitch, stdinCloser chan struct{}, tty *ttyIO, stdinPipe io.WriteClo
 		wg.Add(1)
 		go func() {
 			log.Debug("Starting stdin copy from containerd to PTY.")
-			// TALK: Maybe CopyBuffer with a buffer pool is a better choice?
-			io.Copy(stdinPipe, tty.io.Stdin())
-			log.Debug("Stdin copy completed.")
-			close(stdinCloser)
-			wg.Done()
-			log.Info("Stdin io stream copy exited.")
+			defer wg.Done()
+			defer close(stdinCloser)
+			buf := make([]byte, 4096)
+			for {
+				select {
+				case <-ctx.Done():
+					log.Debug("Stdin copy canceled by context.")
+					return
+				default:
+				}
+
+				n, err := tty.io.Stdin().Read(buf)
+				if n > 0 {
+					chunk := buf[:n]
+					if sig, ok := control.detect(chunk); ok {
+						log.Infof("Captured host control character, interrupting container IO.")
+						notifyInterrupt(sig, "host-control")
+						return
+					}
+					if stdinPipe == nil {
+						log.Debug("stdin pipe is nil, stop copying stdin.")
+						return
+					}
+					if _, werr := stdinPipe.Write(chunk); werr != nil {
+						log.Debugf("Stdin write failed: %v", werr)
+						return
+					}
+				}
+				if err != nil {
+					if !errors.Is(err, io.EOF) {
+						log.Debugf("Stdin copy ended with error: %v", err)
+					} else {
+						log.Debug("Stdin copy completed.")
+					}
+					return
+				}
+			}
 		}()
+	} else {
+		close(stdinCloser)
 	}
 
 	wg.Wait()
 	close(exitch)
 	log.Debug("All IO copies completed.")
+}
+
+type controlCharSet struct {
+	intr byte
+	quit byte
+}
+
+func detectControlChars() controlCharSet {
+	cc := controlCharSet{intr: 0x03, quit: 0x1c} // Defaults: INTR (^C), QUIT (^\)
+
+	// current console, parse termios configurations
+	tty, err := os.Open("/dev/tty")
+	if err != nil {
+		return cc
+	}
+	defer tty.Close()
+
+	if !term.IsTerminal(int(tty.Fd())) {
+		return cc
+	}
+
+	if t, err := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS); err == nil && len(t.Cc) > 0 {
+		if t.Cc[unix.VINTR] != 0 {
+			cc.intr = t.Cc[unix.VINTR]
+		}
+		if t.Cc[unix.VQUIT] != 0 {
+			cc.quit = t.Cc[unix.VQUIT]
+		}
+	}
+
+	return cc
+}
+
+func (c controlCharSet) detect(p []byte) (syscall.Signal, bool) {
+	for _, b := range p {
+		switch b {
+		case c.intr, c.quit:
+			return syscall.SIGKILL, true
+		}
+	}
+	return 0, false
 }
 
 // getBoolAnnotation parses a boolean annotation from the container spec with a default value.
