@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	defs "micrun/definitions"
 	er "micrun/errors"
 	log "micrun/logger"
@@ -18,27 +20,29 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/pkg/errors"
 )
 
 // Container represents a single container instance, encapsulating its configuration,
 // state, and relationship with a sandbox.
 type Container struct {
-	ctx           context.Context
-	id            string
-	me            libmica.MicaExecutor
-	config        *ContainerConfig
-	sandbox       *Sandbox
-	mounts        []Mount
-	rootfs        RootFs
-	containerPath string // The path relative to the root bundle: <bundleRoot>/<sandboxID>/<containerID>.
-	state         ContainerState
-	infraCmd      *exec.Cmd
-	infraExitCh   chan helperCh
+	ctx            context.Context
+	id             string
+	me             libmica.MicaExecutor
+	config         *ContainerConfig
+	sandbox        *Sandbox
+	mounts         []Mount
+	rootfs         RootFs
+	containerPath  string // The path relative to the root bundle: <bundleRoot>/<sandboxID>/<containerID>.
+	state          ContainerState
+	infraCmd       *exec.Cmd
+	infraExitCh    chan helperCh
+	exitNotifier   chan struct{}
+	exitNotifierMu sync.Mutex
 }
 
 type ContainerConfig struct {
@@ -318,6 +322,27 @@ func (c *Container) monitorInfraExit(cmd *exec.Cmd) {
 	if c.sandbox != nil && c.sandbox.config != nil {
 		c.sandbox.config.NetworkConfig.HolderPid = 0
 	}
+}
+
+func (c *Container) ioStream(taskID string) (io.WriteCloser, io.Reader, io.Reader, error) {
+	_ = taskID
+	// TODO: hook up actual PTY/TTY endpoints for mica clients.
+	return noopWriteCloser{}, bytes.NewReader(nil), bytes.NewReader(nil), nil
+}
+
+func extractExitCode(err error) int {
+	if err == nil {
+		return 0
+	}
+
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		if status, ok := exitErr.Sys().(syscall.WaitStatus); ok {
+			return status.ExitStatus()
+		}
+	}
+
+	return 255
 }
 
 func genNsenterArgs(spec specs.Spec, rootfs, fallbackNetPath string) ([]string, error) {
@@ -792,17 +817,18 @@ func isArm64XenImg(firmware string) bool {
 	}
 
 	fh, err := os.Open(firmware)
-	defer fh.Close()
 	if err == nil {
 		// check magic number
 		buf := make([]byte, 0x40)
 		if n, _ := fh.Read(buf); n > 0x3C {
 			if bytes.Contains(buf, []byte("ARMd")) {
+				fh.Close()
 				return true
 			}
 		}
 	}
 
+	fh.Close()
 	return false
 }
 
@@ -857,6 +883,30 @@ func (c *Container) setContainerState(ctx context.Context, state StateString) er
 		return err
 	}
 	return nil
+}
+
+func (c *Container) updateExitNotifier(state StateString) {
+	c.exitNotifierMu.Lock()
+	defer c.exitNotifierMu.Unlock()
+
+	switch state {
+	case StateStopped, StateDown:
+		if c.exitNotifier != nil {
+			close(c.exitNotifier)
+			c.exitNotifier = nil
+		}
+	default:
+		if c.exitNotifier == nil {
+			c.exitNotifier = make(chan struct{})
+		}
+	}
+}
+
+func (c *Container) exitNotifierForState(state StateString) chan struct{} {
+	c.updateExitNotifier(state)
+	c.exitNotifierMu.Lock()
+	defer c.exitNotifierMu.Unlock()
+	return c.exitNotifier
 }
 
 func (c *Container) checkState() StateString {

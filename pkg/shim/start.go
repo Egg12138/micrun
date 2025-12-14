@@ -5,9 +5,7 @@ import (
 	"fmt"
 	log "micrun/logger"
 	"syscall"
-	"time"
 
-	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types/task"
 )
 
@@ -68,8 +66,8 @@ func startContainer(ctx context.Context, s *shimService, c *shimContainer) (retE
 		}
 		c.ttyio = tty
 
-		interrupt := hostInterruptHandler(ctx, s, c)
-		go ioCopy(ctx, c.exitIOch, c.stdinCloser, tty, stdin, stdout, interrupt)
+		intr := hostIntrHandler(ctx, s, c)
+		go ioCopy(ctx, c.exitIOch, c.stdinCloser, tty, stdin, stdout, intr)
 	} else {
 		// Close stdin closer so CloseIO can unblock even when the container never
 		// had an input fifo.
@@ -88,16 +86,10 @@ func startContainer(ctx context.Context, s *shimService, c *shimContainer) (retE
 	return nil
 }
 
-// hostInterruptHandler turns host control characters into a best-effort Kill request.
-func hostInterruptHandler(ctx context.Context, s *shimService, c *shimContainer) func(syscall.Signal, string) {
+// hostIntrHandler turns host control characters into a best-effort Kill request.
+// mica client RTOS can not handle POSIX signals, so micrun handles them in host side
+func hostIntrHandler(ctx context.Context, s *shimService, c *shimContainer) func(syscall.Signal, string) {
 	return func(sig syscall.Signal, reason string) {
-		killCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		if _, err := s.Kill(killCtx, &taskAPI.KillRequest{
-			ID:     c.id,
-			Signal: uint32(sig),
-		}); err != nil {
-			log.Warnf("host interrupt (%s) failed to stop container %s: %v", reason, c.id, err)
-		}
+		requestContainerKill(ctx, s, c, sig, reason)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	log "micrun/logger"
 	cntr "micrun/pkg/micantainer"
 	"sync"
+	"syscall"
 	"time"
 
 	taskAPI "github.com/containerd/containerd/api/runtime/task/v2"
@@ -101,18 +102,34 @@ func waitContainerExit(ctx context.Context, s *shimService, c *shimContainer) (i
 	// TODO: keep this line until mica RTOS notifier finished
 	ptyAutoClose = true
 
-	if c.cType.IsCriSandbox() || !ptyAutoClose {
-		// Pod infra(pause) containers must remain alive until the runtime explicitly
-		// tears them down (e.g. via Kill/Delete). Block here until we receive
-		// that signal.
-		<-c.exitIOch // block until MicRun knows client exited
-		log.Debugf("received exit signal for container %s.", c.id)
-	} else if ptyAutoClose {
+	autoClose := ptyAutoClose && !c.cType.IsCriSandbox()
+	var timer *time.Timer
+	if autoClose {
+		timer = time.NewTimer(ptyTimeout)
+		defer timer.Stop()
+	}
+
+	if autoClose && timer != nil {
 		select {
 		case <-c.exitIOch:
 			log.Debugf("The container %s IO streams closed.", c.id)
-		case <-time.After(ptyTimeout):
+		case <-ctx.Done():
+			log.Infof("waitContainerExit canceled for %s: %v", c.id, ctx.Err())
+			requestContainerKill(ctx, s, c, syscall.SIGKILL, "wait-canceled")
+			<-c.exitIOch
+		case <-timer.C:
 			log.Debugf("Auto-disconnect %s terminal after %v timeout.", c.id, ptyTimeout)
+			requestContainerKill(ctx, s, c, syscall.SIGKILL, "auto-timeout")
+			<-c.exitIOch
+		}
+	} else {
+		select {
+		case <-c.exitIOch:
+			log.Debugf("received exit signal for container %s.", c.id)
+		case <-ctx.Done():
+			log.Infof("waitContainerExit canceled for %s: %v", c.id, ctx.Err())
+			requestContainerKill(ctx, s, c, syscall.SIGKILL, "wait-canceled")
+			<-c.exitIOch
 		}
 	}
 

@@ -131,11 +131,15 @@ runtimeClass:
 
 ```
 
-```shell
-kubelet --cpu-manager-policy=static
-# isolcpus, nohz_full, ... 可以自定义
-```
+当前对CNI的配置还不完善，因此pod需要使用 hostnetwork模式，在 apply pod yaml 时, 添加如下 配置到 spec中
 
+```
+spec:
+  hostNetwork: true
+  runtimeClassName: micrun
+  containers:
+    # ...
+```
 
 #### 使用运行时
 

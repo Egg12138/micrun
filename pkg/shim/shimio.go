@@ -81,7 +81,7 @@ func (tty *ttyIO) close() {
 }
 
 // newTtyIO creates a new TTY IO handler based on the provided URI scheme.
-func newTtyIO(ctx context.Context, ns, id, stdin, stdout, stderr string, terminal bool) (*ttyIO, error) {
+func newTtyIO(ctx context.Context, id, stdin, stdout, stderr string, terminal bool) (*ttyIO, error) {
 	// TODO: Implement this function.
 	var err error
 	var ioImpl IO
@@ -108,7 +108,7 @@ func newTtyIO(ctx context.Context, ns, id, stdin, stdout, stderr string, termina
 		ioImpl, err = newPipeIO(ctx, stream)
 	case "binary":
 		log.Debugf("using binary IO for container %s", id)
-		ioImpl, err = newBinaryIO(ctx, ns, id, uri)
+		ioImpl, err = newBinaryIO(ctx, id, uri)
 	case "file":
 		log.Debugf("using file IO for container %s", id)
 		ioImpl, err = newFileIO(ctx, stream, uri)
@@ -161,7 +161,7 @@ func newFileIO(ctx context.Context, stdio *stdioInfo, uri *url.URL) (*fileIO, er
 
 // newBinaryIO runs a custom binary process for pluggable shim logging
 // containerd newBinaryIO(ctx context.Context, id string, uri *url.URL) (_ runc.IO, err error)
-func newBinaryIO(ctx context.Context, ns, id string, uri *url.URL) (bio *binaryIO, err error) {
+func newBinaryIO(ctx context.Context, id string, uri *url.URL) (bio *binaryIO, err error) {
 	return nil, errdefs.ErrNotImplemented
 }
 

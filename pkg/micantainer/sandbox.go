@@ -492,14 +492,12 @@ func (s *Sandbox) WaitContainerExit(ctx context.Context, containerID string) (in
 
 	log.Infof("wait for container=%s exiting", containerID)
 
-	if c.exitNotifier == nil {
-		c.updateExitNotifier(state)
-	}
+	notifier := c.exitNotifierForState(state)
 
 	select {
 	case <-ctx.Done():
 		return okCode, ctx.Err()
-	case <-c.exitNotifier:
+	case <-notifier:
 		return okCode, nil
 	}
 }
