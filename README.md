@@ -737,6 +737,14 @@ IO (interface)
 └── ttyIO (wrapper) - TTY mode handling
 ```
 
+**如何实现Exec?**
+虽然RTOS往往缺乏线程模型,但是如果将 exec 通过输入的方式传给RTOS，或许可以达到一些启动指令的效果
+现在将 RTOS 视为黑盒，我们只知道有一个 `/dev/pts/*`, 作为slave，RTOS 持有master,维护一个shell
+
+不能简单地通过 echo "ls" > /dev/pts/N 来控制 Shell。
+
+
+
 ### CRI 和运行时
 
 从云原生生态架构，虽然，没有必要关心 Kubernetes 如何与底层容器运行时交互，因为有一个容器端点（像 containerd）服务作为代理，接收来自 Kubernetes 的 CRI，将它们转换为运行时任务 API，我们必须知道 CRI 做什么

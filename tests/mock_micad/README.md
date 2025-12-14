@@ -177,7 +177,7 @@ For each client, mock_micad:
 1. Calls `posix_openpt()` to create PTY master
 2. Authorizes with `grantpt()` and `unlockpt()`
 3. Gets slave name with `ptsname_r()`
-4. Creates symlink `/tmp/mica/ttyRPMSG_<name>` → `/dev/pts/N`
+4. Creates symlink `/tmp/mica/ttyRPMSG_<name>_0` → `/dev/pts/N`
 5. Forks shell process via `forkpty()`
 6. Execs `/bin/bash` (or `/bin/sh` as fallback)
 7. Parent holds master fd for I/O

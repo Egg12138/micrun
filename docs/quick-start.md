@@ -94,10 +94,12 @@ bitbake openeuler-image
 > 1. 低版本qemu存在影响xen的bug，会造成RTOS xen镜像卡死，建议使用高版本qemu。 
 > 可参考 [qemu.org — Build instructions](https://www.qemu.org/download/)
 
+1. (可选)构建镜像
+> 和标准 docker 镜像 `[os,arch]` 2元组不同，RTOS 容器的匹配需要这样的4元组: `[board, os, arch, hypervisor]`
+> 因此, 可用的构建镜像需要同时匹配这四个特征，我们需要用特化的镜像打包方式
+> 
 1. 启动系统
 1. load本地镜像或pull镜像
-> 和标准 docker 镜像 `[os,arch]` 2元组不同，RTOS 容器的匹配需要这样的4元组: `[board, os, arch, hypervisor]`
-> 因此, 可用的构建镜像需要同时匹配这四个特征，请注意镜像的正确性
 1. 为 containerd 注册运行时
 1. (如果使用集群) 为 k3s-agent 注册 micrun runtimeclass
 
@@ -134,7 +136,6 @@ kubelet --cpu-manager-policy=static
 # isolcpus, nohz_full, ... 可以自定义
 ```
 
-推荐
 
 #### 使用运行时
 
@@ -151,7 +152,7 @@ nerdctl update --memory 1024m  <container_id>
 
 ```shell
 ctr container create --runtime io.containerd.mica.v2 -t --annotation org.openeuler.micran.auto_disconnect=true <image> <container_id>
-ctr task start <container_id>
+ctr task start <container_id> # 会进入容器shell, 确认到 RTOS 被拉起了
 ctr task kill <container_id>
 ctr task del <container_id>
 ```

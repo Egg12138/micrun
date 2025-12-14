@@ -64,7 +64,7 @@ else
     echo "✗ Client socket NOT found"
 fi
 
-if [ -e /tmp/mica/ttyRPMSG_test1 ]; then
+if [ -e /tmp/mica/ttyRPMSG_test1_0 ]; then
     echo "✓ PTY symlink created"
 else
     echo "✗ PTY symlink NOT found"

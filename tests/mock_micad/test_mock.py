@@ -128,7 +128,7 @@ def test_create_client(client_name="test-client"):
             return False
 
         # Check if PTY symlink was created
-        pty_symlink = f"/tmp/mica/ttyRPMSG_{client_name}"
+        pty_symlink = f"/tmp/mica/ttyRPMSG_{client_name}_0"
         if os.path.exists(pty_symlink):
             print(f"✓ PTY symlink created: {pty_symlink}")
             # Check where it points

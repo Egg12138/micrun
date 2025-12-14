@@ -33,7 +33,6 @@ type Container struct {
 	me            libmica.MicaExecutor
 	config        *ContainerConfig
 	sandbox       *Sandbox
-	sandboxId     string
 	mounts        []Mount
 	rootfs        RootFs
 	containerPath string // The path relative to the root bundle: <bundleRoot>/<sandboxID>/<containerID>.
@@ -109,7 +108,6 @@ func newContainer(ctx context.Context, s *Sandbox, cc *ContainerConfig) (*Contai
 		id:            cc.ID,
 		me:            libmica.MicaExecutor{Id: cc.ID},
 		sandbox:       s,
-		sandboxId:     s.id,
 		config:        cc,
 		rootfs:        cc.Rootfs,
 		containerPath: filepath.Join(s.id, cc.ID),
@@ -987,7 +985,7 @@ func (c *Container) SaveState() error {
 		ContainerPath string          `json:"container_path"`
 	}{
 		ID:            c.id,
-		SandboxID:     c.sandboxId,
+		SandboxID:     c.sandbox.SandboxID(),
 		State:         c.state,
 		Config:        *c.config,
 		Mounts:        c.mounts,

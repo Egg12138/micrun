@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"runtime"
 	"sync"
+	"syscall"
 	"time"
 
 	cntr "micrun/pkg/micantainer"
@@ -23,6 +24,8 @@ import (
 	"github.com/containerd/containerd/namespaces"
 	ptypes "github.com/containerd/containerd/protobuf/types"
 	shimv2 "github.com/containerd/containerd/runtime/v2/shim"
+	"github.com/containerd/typeurl/v2"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -477,14 +480,13 @@ func (s *shimService) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*ta
 		return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "exec processes are not supported for container %s", r.ID)
 	}
 
+	// delete single container or entire sandbox
 	if c.cType.CanBeSandbox() {
-		// Check if sandbox exists before proceeding
 		if s.sandbox == nil {
 			log.Debugf("Sandbox already deleted in Delete method for container %s", c.id)
 		} else {
 			sandboxID := s.sandbox.SandboxID()
 
-			// Stop and delete the entire sandbox
 			if err := s.sandbox.Stop(ctx, true); err != nil {
 				log.Debugf("Stop sandbox %s returned: %v", sandboxID, err)
 			}
@@ -518,14 +520,86 @@ func (s *shimService) Delete(ctx context.Context, r *taskAPI.DeleteRequest) (*ta
 		Pid:        pid,
 	}, nil
 }
-func (s *shimService) Pids(context.Context, *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
+func (s *shimService) Pids(ctx context.Context, r *taskAPI.PidsRequest) (*taskAPI.PidsResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	return nil, nil
+	info := task.ProcessInfo{
+		Pid: shimPid,
+	}
+	proc := make([]*task.ProcessInfo, 1)
+	proc[0] = &info
+	return &taskAPI.PidsResponse{
+		Processes: proc,
+	}, nil
 }
-func (s *shimService) Pause(context.Context, *taskAPI.PauseRequest) (*ptypes.Empty, error) {
+
+// Pause pauses a container by calling sandbox.PauseContainer.
+func (s *shimService) Pause(ctx context.Context, r *taskAPI.PauseRequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, found := s.containers[r.ID]
+	if !found || c == nil {
+		return nil, er.ContainerNotFound
+	}
+
+	c.status = task.Status_PAUSING
+	if s.sandbox == nil {
+		log.Debugf("Sandbox is nil, cannot pause container %s", r.ID)
+		return nil, er.SandboxNotFound
+	}
+
+	err := s.sandbox.PauseContainer(ctx, r.ID)
+	if err == nil {
+		c.status = task.Status_PAUSED
+		s.send(&events.TaskPaused{
+			ContainerID: c.id,
+		})
+		return emptyResponse, nil
+	}
+
+	status, err := s.getContainerStatus(c.id)
+	if err != nil {
+		log.Debugf("container %s status query failed: %v", r.ID, err)
+		c.status = task.Status_UNKNOWN
+	} else {
+		log.Debugf("container %s status: %s", r.ID, status)
+		c.status = status
+	}
+
 	return emptyResponse, nil
 }
-func (s *shimService) Resume(context.Context, *taskAPI.ResumeRequest) (*ptypes.Empty, error) {
+
+// Resume resumes a paused container by calling sandbox.ResumeContainer.
+func (s *shimService) Resume(ctx context.Context, r *taskAPI.ResumeRequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		return nil, er.ContainerNotFound
+	}
+
+	if s.sandbox == nil {
+		log.Debugf("Sandbox is nil, cannot resume container %s", c.id)
+		return nil, er.SandboxNotFound
+	}
+
+	err := s.sandbox.ResumeContainer(ctx, c.id)
+	if err == nil {
+		c.status = task.Status_RUNNING
+		s.send(&events.TaskResumed{
+			ContainerID: c.id,
+		})
+		return emptyResponse, nil
+	}
+
+	if status, err := s.getContainerStatus(c.id); err != nil {
+		c.status = task.Status_UNKNOWN
+	} else {
+		c.status = status
+	}
 
 	return emptyResponse, nil
 }
@@ -533,39 +607,289 @@ func (s *shimService) Checkpoint(context.Context, *taskAPI.CheckpointTaskRequest
 
 	return emptyResponse, nil
 }
-func (s *shimService) Kill(context.Context, *taskAPI.KillRequest) (*ptypes.Empty, error) {
 
+// Kill converts POSIX signals into sandbox operations and applies them to the task.
+func (s *shimService) Kill(ctx context.Context, r *taskAPI.KillRequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	signum := syscall.Signal(r.Signal)
+
+	c, found := s.containers[r.ID]
+	if !found {
+		return nil, er.ContainerNotFound
+	}
+
+	if r.ExecID != "" {
+		log.Debugf("exec processes are not supported for container %s, ignoring Kill request", r.ID)
+		return emptyResponse, nil
+	}
+
+	switch signum {
+	case syscall.SIGKILL, syscall.SIGTERM:
+		if c.status == task.Status_STOPPED {
+			log.Debugf("container %s already stopped", c.id)
+			return emptyResponse, nil
+		}
+		if c.cType.CanBeSandbox() {
+			if s.sandbox != nil {
+				if err := s.sandbox.Stop(ctx, true); err != nil {
+					log.Debugf("sandbox Stop returned: %v", err)
+				}
+				if err := s.sandbox.Delete(ctx); err != nil {
+					log.Debugf("sandbox Delete returned: %v", err)
+				}
+				s.sandbox = nil
+			} else {
+				log.Debugf("Sandbox already deleted in Kill for container %s", c.id)
+			}
+			c.status = task.Status_STOPPED
+			c.ioExit()
+			return emptyResponse, nil
+		}
+
+		if s.sandbox == nil {
+			log.Debugf("Sandbox is nil, cannot kill container %s", c.id)
+			return nil, er.SandboxNotFound
+		}
+
+		killed, err := s.sandbox.KillContainer(ctx, c.id)
+		if err != nil {
+			st, err1 := s.getContainerStatus(c.id)
+			log.Debugf("kill container %s failed: %v", c.id, err)
+			if err1 != nil {
+				c.status = task.Status_UNKNOWN
+			} else {
+				c.status = st
+			}
+			return nil, err
+		}
+		c.status = task.Status_UNKNOWN
+		c.ioExit()
+		log.Debugf("killed container %v", killed.Status())
+		return emptyResponse, nil
+
+	case syscall.SIGSTOP, syscall.SIGCONT:
+		if c.status == task.Status_PAUSING || c.status == task.Status_STOPPED {
+			log.Debugf("container %s pausing or stopped, can not task action", c.id)
+			return emptyResponse, nil
+		}
+		if s.sandbox == nil {
+			log.Debugf("Sandbox is nil, cannot pause container %s", c.id)
+			return nil, er.SandboxNotFound
+		}
+		if err := s.sandbox.PauseContainer(ctx, c.id); err != nil {
+			log.Debugf("sandbox pause container %s failed %v", c.id, err)
+			st, err1 := s.getContainerStatus(c.id)
+			if err1 != nil {
+				c.status = task.Status_UNKNOWN
+			} else {
+				c.status = st
+			}
+			return nil, err
+		}
+	default:
+		return emptyResponse, nil
+	}
 	return emptyResponse, nil
 }
 func (s *shimService) Exec(context.Context, *taskAPI.ExecProcessRequest) (*ptypes.Empty, error) {
 
 	return emptyResponse, nil
 }
-func (s *shimService) ResizePty(context.Context, *taskAPI.ResizePtyRequest) (*ptypes.Empty, error) {
+
+// ResizePty resizes the PTY for a container by calling sandbox.WinResize.
+func (s *shimService) ResizePty(ctx context.Context, r *taskAPI.ResizePtyRequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	log.Debugf("resizing PTY for container %s to %dx%d", r.ID, r.Width, r.Height)
+	c, found := s.containers[r.ID]
+	if !found || c == nil {
+		return nil, er.ContainerNotFound
+	}
+
+	if s.sandbox == nil {
+		log.Debugf("Sandbox is nil, cannot resize PTY for %s", r.ID)
+		return nil, er.SandboxNotFound
+	}
+
+	if err := s.sandbox.WinResize(ctx, r.ID, r.Height, r.Width); err != nil {
+		return nil, err
+	}
+	return emptyResponse, nil
+}
+
+// CloseIO closes the IO streams for a client OS.
+func (s *shimService) CloseIO(ctx context.Context, r *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		return nil, er.ContainerNotFound
+	}
+
+	if r.ExecID != "" {
+		return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "exec processes are not supported for container %s", r.ID)
+	}
+
+	if !r.Stdin {
+		return emptyResponse, nil
+	}
+
+	stdinCloser := c.stdinCloser
+
+	if c.ttyio != nil && c.ttyio.io != nil && c.ttyio.io.Stdin() != nil {
+		if err := c.ttyio.io.Stdin().Close(); err != nil {
+			log.Debugf("failed to drain containerd stdin reader for %s: %v", r.ID, err)
+		}
+	}
+
+	<-stdinCloser
+
+	if c.stdinPipe != nil {
+		if err := c.stdinPipe.Close(); err != nil {
+			log.Debugf("stdin pipe close for %s returned: %v", r.ID, err)
+		}
+	}
 
 	return emptyResponse, nil
 }
-func (s *shimService) CloseIO(context.Context, *taskAPI.CloseIORequest) (*ptypes.Empty, error) {
+
+// Update updates container resources by calling sandbox.UpdateContainer.
+func (s *shimService) Update(ctx context.Context, r *taskAPI.UpdateTaskRequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		// Best-effort: container may already be gone; treat as success to avoid disrupting higher layers
+		log.Debugf("Update ignored: container %s not found", r.ID)
+		return emptyResponse, nil
+	}
+
+	// Decode resources if present; tolerate errors and proceed as no-op
+	var res specs.LinuxResources
+	if r.Resources != nil {
+		if raw, err := typeurl.UnmarshalAny(r.Resources); err == nil {
+			if lr, ok := raw.(*specs.LinuxResources); ok && lr != nil {
+				res = *lr
+			} else {
+				log.Debugf("Update ignored: invalid resources type for %s", s.id)
+			}
+		} else {
+			log.Debugf("Update ignored: unable to unmarshal resources for %s: %v", s.id, err)
+		}
+	}
+
+	log.Debugf("Update task annotations: %v", r.Annotations)
+	log.Debugf("Update task resource: %+v", res)
+
+	if s.sandbox == nil {
+		log.Debugf("Sandbox is nil, cannot update container %s", r.ID)
+		return nil, er.SandboxNotFound
+	}
+
+	if err := s.sandbox.UpdateContainer(ctx, r.ID, res); err != nil {
+		log.Debugf("UpdateContainer best-effort ignore error for %s: %v", r.ID, err)
+	}
 
 	return emptyResponse, nil
 }
-func (s *shimService) Update(context.Context, *taskAPI.UpdateTaskRequest) (*ptypes.Empty, error) {
+func (s *shimService) Wait(ctx context.Context, r *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
+	s.mu.Lock()
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		s.mu.Unlock()
+		return nil, er.ContainerNotFound
+	}
+	if r.ExecID != "" {
+		s.mu.Unlock()
+		return nil, errdefs.ToGRPCf(errdefs.ErrNotImplemented, "exec processes are not supported for container %s", r.ID)
+	}
 
-	return emptyResponse, nil
+	// Capture current status and the exit channel, then release the lock while waiting
+	exited := c.status == task.Status_STOPPED
+	exitStatus := c.exit
+	exitAt := c.exitTime
+	exitIOch := c.exitIOch
+	s.mu.Unlock()
+
+	// If not already exited, wait for exit or context cancellation
+	if !exited {
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("wait canceled: %w", ctx.Err())
+		case <-exitIOch:
+		}
+	}
+
+	// Re-acquire lock to fetch final status/time
+	s.mu.Lock()
+	exitStatus = c.exit
+	exitAt = c.exitTime
+	s.mu.Unlock()
+
+	return &taskAPI.WaitResponse{
+		ExitStatus: exitStatus,
+		ExitedAt:   timestamppb.New(exitAt),
+	}, nil
 }
-func (s *shimService) Wait(context.Context, *taskAPI.WaitRequest) (*taskAPI.WaitResponse, error) {
 
-	return nil, nil
+// Stats returns container statistics by calling marshalMetrics.
+func (s *shimService) Stats(ctx context.Context, r *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	c, found := s.containers[r.ID]
+	if c == nil || !found {
+		return &taskAPI.StatsResponse{
+			Stats: EmptyMetricsV1(),
+		}, nil
+	}
+
+	data, err := marshalMetrics(ctx, s, r.ID)
+	if err != nil {
+		return &taskAPI.StatsResponse{
+			Stats: EmptyMetricsV1(),
+		}, nil
+	}
+
+	return &taskAPI.StatsResponse{
+		Stats: data,
+	}, nil
 }
-func (s *shimService) Stats(context.Context, *taskAPI.StatsRequest) (*taskAPI.StatsResponse, error) {
-
-	return nil, nil
+func (s *shimService) Connect(ctx context.Context, r *taskAPI.ConnectRequest) (*taskAPI.ConnectResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return &taskAPI.ConnectResponse{
+		ShimPid: shimPid,
+		TaskPid: shimPid,
+	}, nil
 }
-func (s *shimService) Connect(context.Context, *taskAPI.ConnectRequest) (*taskAPI.ConnectResponse, error) {
+func (s *shimService) Shutdown(ctx context.Context, r *taskAPI.ShutdownRequest) (*ptypes.Empty, error) {
+	s.mu.Lock()
+	if len(s.containers) != 0 {
+		s.mu.Unlock()
+		return emptyResponse, nil
+	}
 
-	return nil, nil
-}
-func (s *shimService) Shutdown(context.Context, *taskAPI.ShutdownRequest) (*ptypes.Empty, error) {
+	s.mu.Unlock()
+	s.ss()
 
+	// Clean up the shim socket before exiting to prevent "address already in use" errors
+	// when the shim is restarted. The socket address is stored in the "address" file.
+	if sockAddr, err := shimv2.ReadAddress("address"); err == nil && sockAddr != "" {
+		if err := shimv2.RemoveSocket(sockAddr); err != nil {
+			log.Warnf("failed to remove shim socket %s: %v", sockAddr, err)
+		}
+	}
+
+	// os.Exit() will terminate program immediately, the defer functions won't be executed,
+	// so we add defer functions again before os.Exit().
+	// Refer to https://pkg.go.dev/os#Exit
+	os.Exit(0)
+
+	// This will never be called, but this is only there to make sure the
+	// program can compile.
 	return emptyResponse, nil
 }

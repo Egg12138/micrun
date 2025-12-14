@@ -11,8 +11,8 @@ import (
 )
 
 func handleMicaUpdateWithXl(id string, opts ...string) error {
-	if !xlWorkaroundEnabled() {
-		return fmt.Errorf("xl workaround disabled (set MICRAN_XL_WORKAROUND=1 to enable)")
+	if !xlAsMicaUpdate() {
+		return fmt.Errorf("xl workaround disabled (set MICRUN_XL_WORKAROUND=1 to enable)")
 	}
 	if len(opts) == 0 {
 		return fmt.Errorf("update command requires at least one parameter")
@@ -68,8 +68,9 @@ func handleMicaUpdateWithXl(id string, opts ...string) error {
 	}
 }
 
-func xlWorkaroundEnabled() bool {
-	val := strings.TrimSpace(os.Getenv("MICRAN_XL_WORKAROUND"))
+// xlAsMicaUpdate is a workaround for mica set command
+func xlAsMicaUpdate() bool {
+	val := strings.TrimSpace(os.Getenv("MICRUN_XL_WORKAROUND"))
 	if val == "" {
 		return false
 	}

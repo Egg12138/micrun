@@ -69,7 +69,7 @@ struct mock_client {
 	pid_t shell_pid;          /* Shell process PID */
 	int pty_master_fd;        /* PTY master fd */
 	char socket_path[MAX_PATH_LEN];
-	char pty_symlink[128];    /* /dev/ttyRPMSG_<name> symlink */
+	char pty_symlink[128];    /* /dev/ttyRPMSG_<name>_0 symlink */
 	char pts_slave_path[128]; /* /dev/pts/N real path */
 	struct mock_client *next;
 };
@@ -360,7 +360,7 @@ static int create_pty_for_client(struct mock_client *client)
 	/* Create symlink */
 	sanitize_client_name(suffix, sizeof(suffix), client->name);
 	snprintf(client->pty_symlink, sizeof(client->pty_symlink),
-		 "/tmp/mica/ttyRPMSG_%s", suffix);
+		 "/tmp/mica/ttyRPMSG_%s_0", suffix);
 
 	unlink(client->pty_symlink);
 	if (symlink(pts_name, client->pty_symlink) != 0) {
@@ -372,7 +372,7 @@ static int create_pty_for_client(struct mock_client *client)
 
 	/* Also try to create in /dev/ if possible */
 	char dev_link[128];
-	snprintf(dev_link, sizeof(dev_link), "/dev/ttyRPMSG_%s", suffix);
+	snprintf(dev_link, sizeof(dev_link), "/dev/ttyRPMSG_%s_0", suffix);
 	unlink(dev_link);
 	if (symlink(pts_name, dev_link) != 0) {
 		/* Not critical if this fails */
